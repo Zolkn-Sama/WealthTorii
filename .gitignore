@@ -1,0 +1,69 @@
+# ===== Build directories =====
+/build/
+/cmake-build-*/
+**/cmake-build-*/
+
+# ===== CMake generated files =====
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+Makefile
+compile_commands.json
+
+# ===== CMake internal folders =====
+CMakeFiles/
+Testing/
+
+# ===== IDE / Editor =====
+.idea/
+.vscode/
+
+# ===== macOS =====
+.DS_Store
+
+# ===== Logs =====
+*.log
+
+# ===== Temporary / backup files =====
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# ===== Binary outputs =====
+*.o
+*.obj
+*.out
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# ===== Coverage / profiling =====
+*.gcda
+*.gcno
+*.profraw
+*.profdata
+coverage/
+htmlcov/
+
+# ===== vcpkg =====
+vcpkg_installed/
+installed/
+.vcpkg-root
+vcpkg-manifest-install.log
+
+# ===== Test discovery / generated test files =====
+*_tests[[]*[]]_include.cmake
+*_tests[[]*[]]_tests.cmake
+
+# ===== Personal banking data (NEVER commit) =====
+DATA.csv
+SORTED_DATA.xlsx
+*_bank_export.csv
+*.xlsx

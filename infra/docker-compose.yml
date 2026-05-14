@@ -1,0 +1,32 @@
+# WealthTorii local Postgres for dev / integration tests.
+# Usage:
+#   docker compose -f infra/docker-compose.yml up -d        # start in background
+#   docker compose -f infra/docker-compose.yml logs -f      # tail logs
+#   docker compose -f infra/docker-compose.yml down         # stop (keeps volume)
+#   docker compose -f infra/docker-compose.yml down -v      # stop + wipe data
+#
+# Then export the connection URL so the CLI / tests find it:
+#   export DATABASE_URL="postgresql://wealthtorii:wealthtorii@localhost:5544/wealthtorii"
+
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: wealthtorii_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: wealthtorii
+      POSTGRES_PASSWORD: wealthtorii
+      POSTGRES_DB: wealthtorii
+    ports:
+      - "5544:5432"  # non-default host port to avoid clashes with local Postgres
+    volumes:
+      - wealthtorii_pgdata:/var/lib/postgresql/data
+      - ../migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wealthtorii -d wealthtorii"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  wealthtorii_pgdata:
