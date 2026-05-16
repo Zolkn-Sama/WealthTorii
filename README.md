@@ -4,13 +4,14 @@
 ![CMake](https://img.shields.io/badge/CMake-3.28%2B-blue)
 ![vcpkg](https://img.shields.io/badge/deps-vcpkg-green)
 ![Tests](https://img.shields.io/badge/tests-GoogleTest-brightgreen)
+![API](https://img.shields.io/badge/API-Drogon%20%2B%20Swagger-blue)
 ![Status](https://img.shields.io/badge/status-in%20progress-orange)
 
 WealthTorii est une base de plateforme financière moderne en **C++** orientée :
 - suivi de patrimoine,
 - modélisation monétaire,
 - logique de ledger,
-- gestion de portefeuille,
+- gestion de budget (règle 50/30/20, catégorisation),
 - analytics financiers.
 
 Le projet est pensé comme un socle sérieux, modulaire et testable, capable d’évoluer progressivement d’un usage personnel vers une application plus complète.
@@ -23,9 +24,9 @@ WealthTorii a pour objectif de construire une fondation technique propre pour un
 
 - des montants et devises de manière sûre,
 - des comptes et transactions métier,
-- des positions de portefeuille,
-- des calculs de performance,
-- une future couche API et CLI,
+- l’import et la catégorisation de relevés bancaires,
+- des budgets et des analyses de dépenses,
+- une couche API et CLI,
 - puis, à terme, une architecture plus ambitieuse.
 
 Le projet privilégie d’abord :
@@ -38,27 +39,88 @@ Le projet privilégie d’abord :
 
 ## État actuel
 
-Le projet est actuellement en phase de fondation.
+Le projet a dépassé la phase de fondation : le modèle métier, la persistance
+Postgres, une CLI complète et une API HTTP documentée par Swagger sont en place.
 
-Modules en cours :
-- `money`
-- `ledger`
-- `portfolio`
+**Modules implémentés**
+- `money` — montants/devises sûrs (entiers, unités mineures, cf. ADR-0001)
+- `ledger` — comptes, transactions, journal
+- `budget` — catégories, règle 50/30/20, comparaison budget/dépenses
+- `import` — parsing CSV Banque Populaire + catégorisation par règles regex
+- `storage` — persistance Postgres via `libpqxx` (migrations idempotentes)
+- `analytics` — totaux mensuels, suggestions de budget
 
-Modules prévus :
-- `market_data`
-- `analytics`
-- `api`
-- `cli`
+**Applications**
+- `apps/cli` — binaire `wt` : `allocate`, `categories`, `import`, `report`,
+  `budget`, `rules`, `sync`, `suggest`, `export`
+- `apps/api` — binaire `wt_api` : serveur **Drogon** exposant toutes les
+  fonctionnalités en HTTP, **Swagger UI** intégré et CRUD complet des
+  comptes et transactions (OpenAPI 3.0)
+
+**Modules prévus**
+- `portfolio` — positions et performance
+- `market_data` — données de marché
+
+---
+
+## Démarrage rapide
+
+Prérequis : un toolchain C++20, CMake ≥ 3.28, [vcpkg](https://vcpkg.io)
+(`VCPKG_ROOT` exporté), et Docker pour la base Postgres optionnelle.
+
+```bash
+# Configuration + build
+cmake --preset dev
+cmake --build build/dev
+
+# CLI
+./build/dev/apps/cli/wt help
+./build/dev/apps/cli/wt allocate 1800
+./build/dev/apps/cli/wt report DATA.csv --account bp-main
+
+# Persistance Postgres (optionnelle, pour sync / --from-db / CRUD)
+docker compose -f infra/docker-compose.yml up -d
+export DATABASE_URL="postgresql://wealthtorii:wealthtorii@localhost:5544/wealthtorii"
+
+# API + Swagger UI
+DATABASE_URL="$DATABASE_URL" ./build/dev/apps/api/wt_api
+# → http://127.0.0.1:8080/swagger
+```
+
+Tests : `ctest --preset test-dev` (les tests `storage` se sautent
+automatiquement si `DATABASE_URL` est absent).
+
+---
+
+## API HTTP
+
+`wt_api` sert un descriptif **OpenAPI 3.0** sur `/openapi.json` et une page
+**Swagger UI** sur `/swagger` (la racine `/` y redirige).
+
+| Domaine | Endpoints |
+|---|---|
+| Budget | `GET /api/allocate`, `GET/POST /api/budget`, `GET/DELETE /api/budget/{category}` |
+| Catégories | `GET /api/categories` |
+| Import | `POST /api/import`, `POST /api/report` |
+| Règles | `GET/POST/PUT/DELETE /api/rules` |
+| Comptes | `GET/POST /api/accounts`, `GET/PUT/DELETE /api/accounts/{id}` |
+| Transactions | `GET/POST /api/transactions`, `GET/PUT/DELETE /api/transactions/{id}` |
+| Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
+| Analytics | `GET/POST /api/suggest` |
+| Export | `GET/POST /api/export` (CSV format SORTED_DATA) |
+
+Les endpoints adossés à Postgres répondent `500` si `DATABASE_URL` n’est pas
+défini côté serveur.
 
 ---
 
 ## Stack technique
 
 - **C++20**
-- **CMake**
-- **CMake Presets**
+- **CMake** + **CMake Presets**
 - **vcpkg** pour la gestion des dépendances
+- **Drogon** pour la couche HTTP
+- **libpqxx** + **PostgreSQL** pour la persistance
 - **GoogleTest** pour les tests
 - **clang-format** pour le formatage
 - **clang-tidy** pour l’analyse statique
