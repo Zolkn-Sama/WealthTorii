@@ -113,8 +113,9 @@ automatiquement si `DATABASE_URL` est absent).
 ### Authentification & freemium
 
 L'inscription/connexion renvoie un **JWT** (Bearer). Tous les endpoints
-`/api/*` (sauf `register`/`login`) exigent un token valide. Les comptes et
-transactions sont **cloisonnés par utilisateur** (`user_id`).
+`/api/*` (sauf `register`/`login`) exigent un token valide. Comptes,
+transactions, **budgets et règles** sont **cloisonnés par utilisateur**
+(`user_id`, en Postgres ; suppression d'un user → cascade).
 
 | Tier | Fonctionnalités |
 |---|---|
@@ -127,8 +128,8 @@ signé HS256 avec la variable d'environnement `JWT_SECRET` (valeur de dev par
 défaut si absente). Le passage `free → premium` se fait pour l'instant côté
 base (`UPDATE users SET plan='premium' …`) — pas encore d'intégration paiement.
 
-> Limite connue : `budget` et `rules` restent une config fichier globale
-> (`~/.wealthtorii/*.conf`), pas encore cloisonnée par utilisateur.
+> Note : le binaire CLI `wt` reste mono-utilisateur et conserve sa config
+> fichier `~/.wealthtorii/*.conf` ; seule l'API est multi-utilisateur (Postgres).
 
 Les endpoints adossés à Postgres répondent `500` si `DATABASE_URL` n’est pas
 défini côté serveur.

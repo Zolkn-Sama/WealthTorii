@@ -89,6 +89,76 @@ namespace wealthtorii::storage {
         return r.affected_rows() > 0;
     }
 
+    StoredBudget BudgetConfigRepository::get(std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT currency, category_id, minor_units FROM user_budgets "
+            "WHERE user_id = $1 ORDER BY category_id",
+            pqxx::params{std::string(user_id)});
+        StoredBudget out;
+        for (const auto& row : r) {
+            if (out.limits.empty()) {
+                out.currency = row[0].as<std::string>();
+            }
+            out.limits.emplace_back(row[1].as<std::string>(),
+                                    row[2].as<std::int64_t>());
+        }
+        return out;
+    }
+
+    void BudgetConfigRepository::replace(std::string_view user_id,
+                                         const StoredBudget& budget) {
+        pqxx::work tx(conn_->raw());
+        tx.exec("DELETE FROM user_budgets WHERE user_id = $1",
+                pqxx::params{std::string(user_id)});
+        for (const auto& [category, minor] : budget.limits) {
+            tx.exec(
+                "INSERT INTO user_budgets (user_id, currency, category_id, "
+                "minor_units) VALUES ($1, $2, $3, $4)",
+                pqxx::params{std::string(user_id), budget.currency, category,
+                             minor});
+        }
+        tx.commit();
+    }
+
+    std::vector<StoredRule> RulesRepository::list(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT pattern, category_id, bp_subcategory FROM user_rules "
+            "WHERE user_id = $1 ORDER BY ord",
+            pqxx::params{std::string(user_id)});
+        std::vector<StoredRule> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            StoredRule rule;
+            rule.pattern = row[0].as<std::string>();
+            rule.category_id = row[1].as<std::string>();
+            if (!row[2].is_null()) {
+                rule.bp_subcategory = row[2].as<std::string>();
+            }
+            out.push_back(std::move(rule));
+        }
+        return out;
+    }
+
+    void RulesRepository::replace(std::string_view user_id,
+                                  const std::vector<StoredRule>& rules) {
+        pqxx::work tx(conn_->raw());
+        tx.exec("DELETE FROM user_rules WHERE user_id = $1",
+                pqxx::params{std::string(user_id)});
+        int ord = 0;
+        for (const auto& rule : rules) {
+            tx.exec(
+                "INSERT INTO user_rules (user_id, ord, pattern, category_id, "
+                "bp_subcategory) VALUES ($1, $2, $3, $4, $5)",
+                pqxx::params{std::string(user_id), ord, rule.pattern,
+                             rule.category_id, rule.bp_subcategory});
+            ++ord;
+        }
+        tx.commit();
+    }
+
     bool AccountRepository::ensure(const ledger::Account& account) {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(

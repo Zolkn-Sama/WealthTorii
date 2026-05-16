@@ -53,18 +53,22 @@ namespace {
         send_json(cb, api::error_json(message), code);
     }
 
-    // Forward declarations — auth/tenancy helpers are defined alongside the
-    // CRUD section but used earlier by the DB-backed report/suggest/export.
+    // Forward declarations — auth/tenancy/config helpers are defined alongside
+    // the CRUD section but used earlier by the DB-backed handlers. Budget and
+    // rules are per-user in Postgres (no longer the global ~/.wealthtorii files).
     std::string uid_of(const HttpRequestPtr& req);
     bool require_account_owner(const HttpRequestPtr& req, const Callback& cb,
                                const std::string& account);
-
-    // Builds the layered categorizer used by the CLI: user rules first, defaults appended.
-    import_::Categorizer make_categorizer() {
-        const auto user_rules = cli::load_rules_config(cli::default_rules_config_path());
-        const auto base = import_::default_overrides();
-        return cli::build_categorizer(user_rules, base);
-    }
+    std::optional<cli::BudgetConfig> db_load_budget(const HttpRequestPtr& req,
+                                                     const Callback& cb);
+    bool db_save_budget(const HttpRequestPtr& req, const Callback& cb,
+                        const cli::BudgetConfig& cfg);
+    std::optional<cli::RulesConfig> db_load_rules(const HttpRequestPtr& req,
+                                                  const Callback& cb);
+    bool db_save_rules(const HttpRequestPtr& req, const Callback& cb,
+                       const cli::RulesConfig& cfg);
+    std::optional<import_::Categorizer> db_make_categorizer(
+        const HttpRequestPtr& req, const Callback& cb);
 
     ledger::Journal journal_from_csv(std::istream& in, std::string account,
                                      money::Currency currency,
@@ -468,11 +472,14 @@ namespace {
         if (!up.ok) {
             return send_error(cb, up.error);
         }
+        const auto overrides = db_make_categorizer(req, cb);
+        if (!overrides.has_value()) {
+            return;
+        }
         std::istringstream in{up.content};
         import_::ImportOptions opts;
         opts.account_id = up.account;
-        const auto overrides = make_categorizer();
-        opts.overrides = &overrides;
+        opts.overrides = &*overrides;
         try {
             const auto rep = import_::import_bp_csv(in, opts);
             Json::Value out(Json::objectValue);
@@ -499,16 +506,22 @@ namespace {
                 return send_error(cb, "'month' must be YYYY-MM");
             }
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        const auto overrides = make_categorizer();
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto overrides = db_make_categorizer(req, cb);
+        if (!overrides.has_value()) {
+            return;
+        }
         try {
             std::istringstream in{up.content};
             const auto journal =
-                journal_from_csv(in, up.account, cfg.currency, overrides);
+                journal_from_csv(in, up.account, cfg->currency, *overrides);
             if (journal.empty()) {
                 return send_error(cb, "no transactions parsed from CSV");
             }
-            send_json(cb, build_report_json(journal, up.account, month, cfg));
+            send_json(cb, build_report_json(journal, up.account, month, *cfg));
         } catch (const std::exception& e) {
             send_error(cb, e.what());
         }
@@ -537,17 +550,23 @@ namespace {
         if (journal->empty()) {
             return send_error(cb, "no transactions in DB for account " + account);
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        send_json(cb, build_report_json(*journal, account, month, cfg));
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        send_json(cb, build_report_json(*journal, account, month, *cfg));
     }
 
-    void h_budget_get(const HttpRequestPtr&, Callback&& cb) {
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
+    void h_budget_get(const HttpRequestPtr& req, Callback&& cb) {
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
         Json::Value out(Json::objectValue);
-        out["currency"] = std::string(money::to_string(cfg.currency));
+        out["currency"] = std::string(money::to_string(cfg->currency));
         Json::Value limits(Json::arrayValue);
-        auto total = money::Money::zero(cfg.currency);
-        for (const auto& [cat, limit] : cfg.limits) {
+        auto total = money::Money::zero(cfg->currency);
+        for (const auto& [cat, limit] : cfg->limits) {
             Json::Value row(Json::objectValue);
             row["category"] = cat;
             row["limit"] = api::money_json(limit);
@@ -566,34 +585,38 @@ namespace {
         }
         const auto category = (*body)["category"].asString();
         const auto amount_s = (*body)["amount"].asString();
-        auto cfg = cli::load_budget_config(cli::default_budget_config_path());
+        auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
         if (body->isMember("currency")) {
             const auto parsed = money::currency_from_string((*body)["currency"].asString());
             if (!parsed.has_value()) {
                 return send_error(cb, "unknown currency");
             }
-            cfg.currency = *parsed;
+            cfg->currency = *parsed;
         }
-        const auto amount = money::Money::from_string(amount_s, cfg.currency);
+        const auto amount = money::Money::from_string(amount_s, cfg->currency);
         if (!amount.has_value()) {
             return send_error(cb, "'" + amount_s + "' is not a valid amount");
         }
         if (amount->is_negative()) {
             return send_error(cb, "limit must be non-negative");
         }
-        cfg.limits[category] = *amount;
-        try {
-            cli::save_budget_config(cli::default_budget_config_path(), cfg);
-        } catch (const std::exception& e) {
-            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        cfg->limits[category] = *amount;
+        if (!db_save_budget(req, cb, *cfg)) {
+            return;
         }
         h_budget_get(req, std::move(cb));
     }
 
-    void h_rules_get(const HttpRequestPtr&, Callback&& cb) {
-        const auto cfg = cli::load_rules_config(cli::default_rules_config_path());
+    void h_rules_get(const HttpRequestPtr& req, Callback&& cb) {
+        const auto cfg = db_load_rules(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
         Json::Value rules(Json::arrayValue);
-        for (const auto& r : cfg.rules) {
+        for (const auto& r : cfg->rules) {
             Json::Value row(Json::objectValue);
             row["pattern"] = r.pattern;
             row["category"] = r.category_id;
@@ -624,9 +647,12 @@ namespace {
         } catch (const std::regex_error& e) {
             return send_error(cb, std::string("invalid regex: ") + e.what());
         }
-        auto cfg = cli::load_rules_config(cli::default_rules_config_path());
+        auto cfg = db_load_rules(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
         bool updated = false;
-        for (auto& r : cfg.rules) {
+        for (auto& r : cfg->rules) {
             if (r.pattern == pattern) {
                 r.category_id = category;
                 r.bp_subcategory = bp_sub;
@@ -635,12 +661,10 @@ namespace {
             }
         }
         if (!updated) {
-            cfg.rules.push_back(cli::Rule{pattern, category, bp_sub});
+            cfg->rules.push_back(cli::Rule{pattern, category, bp_sub});
         }
-        try {
-            cli::save_rules_config(cli::default_rules_config_path(), cfg);
-        } catch (const std::exception& e) {
-            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        if (!db_save_rules(req, cb, *cfg)) {
+            return;
         }
         h_rules_get(req, std::move(cb));
     }
@@ -650,21 +674,22 @@ namespace {
         if (pattern.empty()) {
             return send_error(cb, "query parameter 'pattern' is required");
         }
-        auto cfg = cli::load_rules_config(cli::default_rules_config_path());
-        const auto before = cfg.rules.size();
-        cfg.rules.erase(std::remove_if(cfg.rules.begin(), cfg.rules.end(),
-                                       [&](const cli::Rule& r) {
-                                           return r.pattern == pattern;
-                                       }),
-                        cfg.rules.end());
-        if (cfg.rules.size() == before) {
+        auto cfg = db_load_rules(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto before = cfg->rules.size();
+        cfg->rules.erase(std::remove_if(cfg->rules.begin(), cfg->rules.end(),
+                                        [&](const cli::Rule& r) {
+                                            return r.pattern == pattern;
+                                        }),
+                         cfg->rules.end());
+        if (cfg->rules.size() == before) {
             return send_error(cb, "no rule matched '" + pattern + "'",
                               drogon::k404NotFound);
         }
-        try {
-            cli::save_rules_config(cli::default_rules_config_path(), cfg);
-        } catch (const std::exception& e) {
-            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        if (!db_save_rules(req, cb, *cfg)) {
+            return;
         }
         h_rules_get(req, std::move(cb));
     }
@@ -679,20 +704,26 @@ namespace {
             return send_error(cb, "$DATABASE_URL is not set on the server",
                               drogon::k500InternalServerError);
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        const auto overrides = make_categorizer();
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto overrides = db_make_categorizer(req, cb);
+        if (!overrides.has_value()) {
+            return;
+        }
         try {
             std::istringstream in{up.content};
             import_::ImportOptions opts;
             opts.account_id = up.account;
-            opts.currency = cfg.currency;
-            opts.overrides = &overrides;
+            opts.currency = cfg->currency;
+            opts.overrides = &*overrides;
             const auto imp = import_::import_bp_csv(in, opts);
 
             storage::Connection conn{*url};
             storage::apply_default_migrations(conn);
             storage::AccountRepository accounts{conn};
-            accounts.ensure(ledger::Account{up.account, up.account, cfg.currency,
+            accounts.ensure(ledger::Account{up.account, up.account, cfg->currency,
                                             ledger::AccountType::CASH},
                             uid_of(req));
             storage::TransactionRepository txs{conn};
@@ -773,16 +804,22 @@ namespace {
                 return send_error(cb, "'ending' must be YYYY-MM");
             }
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        const auto overrides = make_categorizer();
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto overrides = db_make_categorizer(req, cb);
+        if (!overrides.has_value()) {
+            return;
+        }
         try {
             std::istringstream in{up.content};
             const auto journal =
-                journal_from_csv(in, up.account, cfg.currency, overrides);
+                journal_from_csv(in, up.account, cfg->currency, *overrides);
             if (journal.empty()) {
                 return send_error(cb, "no transactions parsed from CSV");
             }
-            send_json(cb, suggestions_json(journal, ending, months, cfg.currency));
+            send_json(cb, suggestions_json(journal, ending, months, cfg->currency));
         } catch (const std::exception& e) {
             send_error(cb, e.what());
         }
@@ -823,8 +860,11 @@ namespace {
         if (journal->empty()) {
             return send_error(cb, "no transactions in DB for account " + account);
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        send_json(cb, suggestions_json(*journal, ending, months, cfg.currency));
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        send_json(cb, suggestions_json(*journal, ending, months, cfg->currency));
     }
 
     // 11-column CSV matching SORTED_DATA.xlsx, identical to `wt export`.
@@ -885,12 +925,18 @@ namespace {
         if (!up.ok) {
             return send_error(cb, up.error);
         }
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        const auto overrides = make_categorizer();
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto overrides = db_make_categorizer(req, cb);
+        if (!overrides.has_value()) {
+            return;
+        }
         try {
             std::istringstream in{up.content};
             const auto journal =
-                journal_from_csv(in, up.account, cfg.currency, overrides);
+                journal_from_csv(in, up.account, cfg->currency, *overrides);
             send_csv(cb, export_csv(journal));
         } catch (const std::exception& e) {
             send_error(cb, e.what());
@@ -974,6 +1020,104 @@ namespace {
             send_error(cb, e.what(), drogon::k500InternalServerError);
             return false;
         }
+    }
+
+    // ---- per-user budget & rules (Postgres-backed) --------------------------
+
+    std::optional<cli::BudgetConfig> db_load_budget(const HttpRequestPtr& req,
+                                                    const Callback& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return std::nullopt;
+        }
+        try {
+            const storage::BudgetConfigRepository repo{*db};
+            const auto sb = repo.get(uid_of(req));
+            cli::BudgetConfig cfg;
+            cfg.currency = money::currency_from_string(sb.currency)
+                               .value_or(money::Currency::EUR);
+            for (const auto& [category, minor] : sb.limits) {
+                cfg.limits[category] = money::Money(minor, cfg.currency);
+            }
+            return cfg;
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+            return std::nullopt;
+        }
+    }
+
+    bool db_save_budget(const HttpRequestPtr& req, const Callback& cb,
+                        const cli::BudgetConfig& cfg) {
+        auto db = open_db(cb);
+        if (!db) {
+            return false;
+        }
+        try {
+            storage::StoredBudget sb;
+            sb.currency = std::string(money::to_string(cfg.currency));
+            for (const auto& [category, amount] : cfg.limits) {
+                sb.limits.emplace_back(category, amount.minor_units());
+            }
+            storage::BudgetConfigRepository repo{*db};
+            repo.replace(uid_of(req), sb);
+            return true;
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+            return false;
+        }
+    }
+
+    std::optional<cli::RulesConfig> db_load_rules(const HttpRequestPtr& req,
+                                                  const Callback& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return std::nullopt;
+        }
+        try {
+            const storage::RulesRepository repo{*db};
+            cli::RulesConfig cfg;
+            for (auto& r : repo.list(uid_of(req))) {
+                cfg.rules.push_back(cli::Rule{std::move(r.pattern),
+                                              std::move(r.category_id),
+                                              std::move(r.bp_subcategory)});
+            }
+            return cfg;
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+            return std::nullopt;
+        }
+    }
+
+    bool db_save_rules(const HttpRequestPtr& req, const Callback& cb,
+                       const cli::RulesConfig& cfg) {
+        auto db = open_db(cb);
+        if (!db) {
+            return false;
+        }
+        try {
+            std::vector<storage::StoredRule> rows;
+            rows.reserve(cfg.rules.size());
+            for (const auto& r : cfg.rules) {
+                rows.push_back(storage::StoredRule{r.pattern, r.category_id,
+                                                   r.bp_subcategory});
+            }
+            storage::RulesRepository repo{*db};
+            repo.replace(uid_of(req), rows);
+            return true;
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+            return false;
+        }
+    }
+
+    // User rules first (priority), then the built-in default overrides.
+    std::optional<import_::Categorizer> db_make_categorizer(
+        const HttpRequestPtr& req, const Callback& cb) {
+        const auto rules = db_load_rules(req, cb);
+        if (!rules.has_value()) {
+            return std::nullopt;
+        }
+        return cli::build_categorizer(*rules, import_::default_overrides());
     }
 
     // True if `account` exists and belongs to `uid`.
@@ -1248,12 +1392,16 @@ namespace {
         }
     }
 
-    // ---- budget: getById + delete (file-backed) -----------------------------
+    // ---- budget: getById + delete (per-user, Postgres) ----------------------
 
-    void h_budget_get_one(const HttpRequestPtr&, Callback&& cb, std::string category) {
-        const auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        const auto it = cfg.limits.find(category);
-        if (it == cfg.limits.end()) {
+    void h_budget_get_one(const HttpRequestPtr& req, Callback&& cb,
+                          std::string category) {
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto it = cfg->limits.find(category);
+        if (it == cfg->limits.end()) {
             return send_error(cb, "no limit set for category '" + category + "'",
                               drogon::k404NotFound);
         }
@@ -1263,16 +1411,18 @@ namespace {
         send_json(cb, out);
     }
 
-    void h_budget_delete(const HttpRequestPtr& req, Callback&& cb, std::string category) {
-        auto cfg = cli::load_budget_config(cli::default_budget_config_path());
-        if (cfg.limits.erase(category) == 0) {
+    void h_budget_delete(const HttpRequestPtr& req, Callback&& cb,
+                         std::string category) {
+        auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        if (cfg->limits.erase(category) == 0) {
             return send_error(cb, "no limit set for category '" + category + "'",
                               drogon::k404NotFound);
         }
-        try {
-            cli::save_budget_config(cli::default_budget_config_path(), cfg);
-        } catch (const std::exception& e) {
-            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        if (!db_save_budget(req, cb, *cfg)) {
+            return;
         }
         h_budget_get(req, std::move(cb));
     }
@@ -1284,8 +1434,11 @@ namespace {
         if (pattern.empty()) {
             return h_rules_get(req, std::move(cb));
         }
-        const auto cfg = cli::load_rules_config(cli::default_rules_config_path());
-        for (const auto& r : cfg.rules) {
+        const auto cfg = db_load_rules(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        for (const auto& r : cfg->rules) {
             if (r.pattern == pattern) {
                 Json::Value row(Json::objectValue);
                 row["pattern"] = r.pattern;
@@ -1310,9 +1463,12 @@ namespace {
         if (body->isMember("bp_subcategory") && !(*body)["bp_subcategory"].isNull()) {
             bp_sub = (*body)["bp_subcategory"].asString();
         }
-        auto cfg = cli::load_rules_config(cli::default_rules_config_path());
+        auto cfg = db_load_rules(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
         bool found = false;
-        for (auto& r : cfg.rules) {
+        for (auto& r : cfg->rules) {
             if (r.pattern == pattern) {
                 r.category_id = category;
                 r.bp_subcategory = bp_sub;
@@ -1325,10 +1481,8 @@ namespace {
                                       "' (use POST to create)",
                               drogon::k404NotFound);
         }
-        try {
-            cli::save_rules_config(cli::default_rules_config_path(), cfg);
-        } catch (const std::exception& e) {
-            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        if (!db_save_rules(req, cb, *cfg)) {
+            return;
         }
         h_rules_get(req, std::move(cb));
     }
