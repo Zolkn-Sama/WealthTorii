@@ -13,6 +13,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace wealthtorii::storage {
@@ -37,6 +38,46 @@ namespace wealthtorii::storage {
 
         // Updates the plan ("free"|"premium"). Returns false if the id is unknown.
         bool set_plan(std::string_view id, std::string_view plan);
+
+    private:
+        Connection* conn_;
+    };
+
+    // Per-user budget limits. currency is uniform across the set (enforced in
+    // the API); empty when the user has no limits yet.
+    struct StoredBudget {
+        std::string currency = "EUR";
+        std::vector<std::pair<std::string, std::int64_t>> limits; // (category, minor)
+    };
+
+    class BudgetConfigRepository {
+    public:
+        explicit BudgetConfigRepository(Connection& conn) noexcept : conn_(&conn) {}
+
+        [[nodiscard]] StoredBudget get(std::string_view user_id) const;
+
+        // Replaces the user's whole budget (delete-all then insert).
+        void replace(std::string_view user_id, const StoredBudget& budget);
+
+    private:
+        Connection* conn_;
+    };
+
+    // One ordered categorisation rule (insertion order = match priority).
+    struct StoredRule {
+        std::string pattern;
+        std::string category_id;
+        std::optional<std::string> bp_subcategory;
+    };
+
+    class RulesRepository {
+    public:
+        explicit RulesRepository(Connection& conn) noexcept : conn_(&conn) {}
+
+        [[nodiscard]] std::vector<StoredRule> list(std::string_view user_id) const;
+
+        // Replaces the user's whole rule list, preserving the given order.
+        void replace(std::string_view user_id, const std::vector<StoredRule>& rules);
 
     private:
         Connection* conn_;
