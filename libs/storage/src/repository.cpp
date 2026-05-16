@@ -92,6 +92,58 @@ namespace wealthtorii::storage {
         return out;
     }
 
+    bool AccountRepository::update(const ledger::Account& account) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "UPDATE accounts SET name = $2, currency = $3, type = $4, is_active = $5 "
+            "WHERE id = $1",
+            pqxx::params{account.id(), account.name(), currency_code(account.currency()),
+                         account_type_code(account.type()), account.is_active()});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool AccountRepository::remove(std::string_view id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec("DELETE FROM accounts WHERE id = $1",
+                               pqxx::params{std::string(id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    std::optional<ledger::Transaction> TransactionRepository::find(
+        std::string_view id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, account_id, occurred_on::text, minor_units, currency, description, "
+            "       category_id, bp_category, bp_subcategory, type_operation, is_reconciled "
+            "FROM transactions WHERE id = $1",
+            pqxx::params{std::string(id)});
+        if (r.empty()) return std::nullopt;
+        const auto& row = r.front();
+        const auto date = parse_iso_date(row[2].as<std::string>());
+        const money::Money amount(row[3].as<std::int64_t>(),
+                                   parse_currency(row[4].as<std::string>()));
+        std::optional<std::string> category;
+        if (!row[6].is_null()) category = row[6].as<std::string>();
+        std::optional<std::string> bp_cat;
+        if (!row[7].is_null()) bp_cat = row[7].as<std::string>();
+        std::optional<std::string> bp_sub;
+        if (!row[8].is_null()) bp_sub = row[8].as<std::string>();
+        return ledger::Transaction(row[0].as<std::string>(), date, row[1].as<std::string>(),
+                                    amount, row[5].as<std::string>(), std::move(category),
+                                    std::move(bp_cat), std::move(bp_sub),
+                                    row[9].as<std::string>(), row[10].as<bool>());
+    }
+
+    bool TransactionRepository::remove(std::string_view id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec("DELETE FROM transactions WHERE id = $1",
+                               pqxx::params{std::string(id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
     UpsertStats TransactionRepository::upsert(std::span<const ledger::Transaction> txs) {
         UpsertStats stats;
         pqxx::work tx(conn_->raw());

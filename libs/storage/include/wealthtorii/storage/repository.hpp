@@ -29,6 +29,14 @@ namespace wealthtorii::storage {
         // Inserts the account if absent, no-op otherwise. Returns true on insert.
         bool ensure(const ledger::Account& account);
 
+        // Updates name/currency/type/is_active of an existing account (matched by id).
+        // Returns false if no account with that id exists.
+        bool update(const ledger::Account& account);
+
+        // Deletes the account and (via ON DELETE CASCADE) its transactions.
+        // Returns false if no account with that id existed.
+        bool remove(std::string_view id);
+
         [[nodiscard]] std::optional<ledger::Account> find(std::string_view id) const;
         [[nodiscard]] std::vector<ledger::Account> all() const;
 
@@ -43,9 +51,13 @@ namespace wealthtorii::storage {
         // Upserts every transaction (PK = id). Re-importing the same CSV is idempotent.
         UpsertStats upsert(std::span<const ledger::Transaction> txs);
 
+        [[nodiscard]] std::optional<ledger::Transaction> find(std::string_view id) const;
         [[nodiscard]] std::vector<ledger::Transaction> for_account(std::string_view account_id) const;
         [[nodiscard]] std::vector<ledger::Transaction> for_month(
             std::string_view account_id, std::chrono::year_month month) const;
+
+        // Deletes a single transaction by id. Returns false if it did not exist.
+        bool remove(std::string_view id);
 
         // Convenience: loads transactions for an account into a Journal.
         [[nodiscard]] ledger::Journal load_journal(std::string_view account_id) const;
