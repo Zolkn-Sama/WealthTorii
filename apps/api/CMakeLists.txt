@@ -1,4 +1,6 @@
 find_package(Drogon CONFIG REQUIRED)
+find_package(unofficial-sodium CONFIG REQUIRED)
+find_package(jwt-cpp CONFIG REQUIRED)
 
 add_executable(wt_api
         src/main.cpp
@@ -12,5 +14,7 @@ target_link_libraries(wt_api
         PRIVATE
         wealthtorii_cli_lib
         Drogon::Drogon
+        unofficial-sodium::sodium
+        jwt-cpp::jwt-cpp
         wealthtorii::warnings
 )

@@ -33,10 +33,12 @@ namespace wealthtorii::api {
   "info": {
     "title": "WealthTorii API",
     "version": "0.1.0",
-    "description": "Couche HTTP exposant les fonctionnalites deja implementees du CLI WealthTorii (allocate, categories, import, report, budget, rules, sync, suggest, export). Les endpoints --from-db necessitent la variable d'environnement DATABASE_URL cote serveur."
+    "description": "Couche HTTP exposant les fonctionnalites du CLI WealthTorii.\n\nAUTH : POST /api/auth/register puis /api/auth/login renvoient un JWT. Cliquez sur 'Authorize' et collez le token. Tous les endpoints /api/* (sauf register/login) exigent un Bearer token.\n\nFREEMIUM : GRATUIT = allocate, categories, budget, rules, import. PREMIUM (plan 'premium', sinon 402) = report, suggest, export, accounts, transactions, sync.\n\nLes comptes et transactions sont cloisonnes par utilisateur. Les endpoints Postgres necessitent DATABASE_URL cote serveur."
   },
   "servers": [{ "url": "/" }],
+  "security": [{ "bearerAuth": [] }],
   "tags": [
+    { "name": "auth", "description": "Inscription, connexion, profil" },
     { "name": "budget", "description": "Allocation 50/30/20 et configuration des limites" },
     { "name": "categories", "description": "Registre de categories" },
     { "name": "accounts", "description": "CRUD des comptes (Postgres)" },
@@ -48,6 +50,41 @@ namespace wealthtorii::api {
     { "name": "export", "description": "Export CSV" }
   ],
   "paths": {
+    "/api/auth/register": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Cree un compte (plan gratuit) et renvoie un JWT",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" } } } },
+        "responses": {
+          "201": { "description": "Compte cree", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "409": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "tags": ["auth"],
+        "summary": "Authentifie et renvoie un JWT",
+        "security": [],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Credentials" } } } },
+        "responses": {
+          "200": { "description": "Session", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Session" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/api/auth/me": {
+      "get": {
+        "tags": ["auth"],
+        "summary": "Profil de l'utilisateur connecte (id, email, plan)",
+        "responses": {
+          "200": { "description": "Profil", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/User" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
     "/api/allocate": {
       "get": {
         "tags": ["budget"],
@@ -415,12 +452,46 @@ namespace wealthtorii::api {
     }
   },
   "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "JWT obtenu via /api/auth/login ou /api/auth/register."
+      }
+    },
     "responses": {
       "BadRequest": { "description": "Requete invalide", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "Unauthorized": { "description": "Token absent, invalide ou expire", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+      "PaymentRequired": { "description": "Fonctionnalite reservee au plan premium", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
       "ServerError": { "description": "Erreur serveur (ex: DATABASE_URL absent)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
     },
     "schemas": {
       "Error": { "type": "object", "properties": { "error": { "type": "string" } } },
+      "Credentials": {
+        "type": "object",
+        "required": ["email", "password"],
+        "properties": {
+          "email": { "type": "string", "example": "alice@example.com" },
+          "password": { "type": "string", "minLength": 8, "example": "s3cretpwd" }
+        }
+      },
+      "User": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "email": { "type": "string" },
+          "plan": { "type": "string", "enum": ["free", "premium"] }
+        }
+      },
+      "Session": {
+        "type": "object",
+        "properties": {
+          "token": { "type": "string" },
+          "token_type": { "type": "string", "example": "Bearer" },
+          "user": { "$ref": "#/components/schemas/User" }
+        }
+      },
       "Money": {
         "type": "object",
         "properties": {
