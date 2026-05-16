@@ -13,9 +13,13 @@ jobs:
     env:
       VCPKG_ROOT: ${{ github.workspace }}/vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}/.vcpkg-bincache
+      # Run JS actions on Node 24 (Node 20 is deprecated). checkout@v5 is
+      # natively Node 24; this also covers cache@v4 and get-cmake until they
+      # ship Node 24 releases.
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Modern CMake (>= 3.28, the project minimum) + Ninja.
       - name: Install CMake & Ninja
