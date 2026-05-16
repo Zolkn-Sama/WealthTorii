@@ -48,6 +48,47 @@ namespace wealthtorii::storage {
         }
     } // namespace
 
+    bool UserRepository::create(const User& user) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "INSERT INTO users (id, email, password_hash, plan) "
+            "VALUES ($1, $2, $3, $4) "
+            "ON CONFLICT (email) DO NOTHING",
+            pqxx::params{user.id, user.email, user.password_hash, user.plan});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    std::optional<User> UserRepository::find_by_email(std::string_view email) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, email, password_hash, plan FROM users WHERE email = $1",
+            pqxx::params{std::string(email)});
+        if (r.empty()) return std::nullopt;
+        const auto& row = r.front();
+        return User{row[0].as<std::string>(), row[1].as<std::string>(),
+                    row[2].as<std::string>(), row[3].as<std::string>()};
+    }
+
+    std::optional<User> UserRepository::find_by_id(std::string_view id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, email, password_hash, plan FROM users WHERE id = $1",
+            pqxx::params{std::string(id)});
+        if (r.empty()) return std::nullopt;
+        const auto& row = r.front();
+        return User{row[0].as<std::string>(), row[1].as<std::string>(),
+                    row[2].as<std::string>(), row[3].as<std::string>()};
+    }
+
+    bool UserRepository::set_plan(std::string_view id, std::string_view plan) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec("UPDATE users SET plan = $2 WHERE id = $1",
+                               pqxx::params{std::string(id), std::string(plan)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
     bool AccountRepository::ensure(const ledger::Account& account) {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(
@@ -90,6 +131,90 @@ namespace wealthtorii::storage {
                               row[4].as<bool>());
         }
         return out;
+    }
+
+    bool AccountRepository::ensure(const ledger::Account& account,
+                                   std::string_view user_id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "INSERT INTO accounts (id, name, currency, type, is_active, user_id) "
+            "VALUES ($1, $2, $3, $4, $5, $6) "
+            "ON CONFLICT (id) DO NOTHING",
+            pqxx::params{account.id(), account.name(), currency_code(account.currency()),
+                         account_type_code(account.type()), account.is_active(),
+                         std::string(user_id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool AccountRepository::update(const ledger::Account& account,
+                                   std::string_view user_id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "UPDATE accounts SET name = $2, currency = $3, type = $4, is_active = $5 "
+            "WHERE id = $1 AND user_id = $6",
+            pqxx::params{account.id(), account.name(), currency_code(account.currency()),
+                         account_type_code(account.type()), account.is_active(),
+                         std::string(user_id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool AccountRepository::remove(std::string_view id, std::string_view user_id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "DELETE FROM accounts WHERE id = $1 AND user_id = $2",
+            pqxx::params{std::string(id), std::string(user_id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    std::optional<ledger::Account> AccountRepository::find(
+        std::string_view id, std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, name, currency, type, is_active FROM accounts "
+            "WHERE id = $1 AND user_id = $2",
+            pqxx::params{std::string(id), std::string(user_id)});
+        if (r.empty()) return std::nullopt;
+        const auto& row = r.front();
+        const auto type = ledger::account_type_from_string(row[3].as<std::string>());
+        if (!type.has_value()) {
+            throw std::runtime_error("unknown account type from DB: " +
+                                     row[3].as<std::string>());
+        }
+        return ledger::Account(row[0].as<std::string>(), row[1].as<std::string>(),
+                                parse_currency(row[2].as<std::string>()), *type,
+                                row[4].as<bool>());
+    }
+
+    std::vector<ledger::Account> AccountRepository::all(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, name, currency, type, is_active FROM accounts "
+            "WHERE user_id = $1 ORDER BY id",
+            pqxx::params{std::string(user_id)});
+        std::vector<ledger::Account> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            const auto type = ledger::account_type_from_string(row[3].as<std::string>());
+            if (!type.has_value()) continue;
+            out.emplace_back(row[0].as<std::string>(), row[1].as<std::string>(),
+                              parse_currency(row[2].as<std::string>()), *type,
+                              row[4].as<bool>());
+        }
+        return out;
+    }
+
+    std::optional<std::string> AccountRepository::owner_of(
+        std::string_view account_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT user_id FROM accounts WHERE id = $1",
+            pqxx::params{std::string(account_id)});
+        if (r.empty() || r.front()[0].is_null()) return std::nullopt;
+        return r.front()[0].as<std::string>();
     }
 
     bool AccountRepository::update(const ledger::Account& account) {

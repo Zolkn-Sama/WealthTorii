@@ -99,6 +99,7 @@ automatiquement si `DATABASE_URL` est absent).
 
 | Domaine | Endpoints |
 |---|---|
+| Auth | `POST /api/auth/register`, `POST /api/auth/login`, `GET /api/auth/me` |
 | Budget | `GET /api/allocate`, `GET/POST /api/budget`, `GET/DELETE /api/budget/{category}` |
 | Catégories | `GET /api/categories` |
 | Import | `POST /api/import`, `POST /api/report` |
@@ -108,6 +109,26 @@ automatiquement si `DATABASE_URL` est absent).
 | Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
 | Analytics | `GET/POST /api/suggest` |
 | Export | `GET/POST /api/export` (CSV format SORTED_DATA) |
+
+### Authentification & freemium
+
+L'inscription/connexion renvoie un **JWT** (Bearer). Tous les endpoints
+`/api/*` (sauf `register`/`login`) exigent un token valide. Les comptes et
+transactions sont **cloisonnés par utilisateur** (`user_id`).
+
+| Tier | Fonctionnalités |
+|---|---|
+| **Gratuit** | `allocate`, `categories`, `budget`, `rules`, `import` |
+| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync` |
+
+Un utilisateur `free` qui appelle un endpoint premium reçoit `402 Payment
+Required`. Le mot de passe est haché en **Argon2id** (libsodium) ; le JWT est
+signé HS256 avec la variable d'environnement `JWT_SECRET` (valeur de dev par
+défaut si absente). Le passage `free → premium` se fait pour l'instant côté
+base (`UPDATE users SET plan='premium' …`) — pas encore d'intégration paiement.
+
+> Limite connue : `budget` et `rules` restent une config fichier globale
+> (`~/.wealthtorii/*.conf`), pas encore cloisonnée par utilisateur.
 
 Les endpoints adossés à Postgres répondent `500` si `DATABASE_URL` n’est pas
 défini côté serveur.
@@ -120,6 +141,7 @@ défini côté serveur.
 - **CMake** + **CMake Presets**
 - **vcpkg** pour la gestion des dépendances
 - **Drogon** pour la couche HTTP
+- **libsodium** (Argon2id) + **jwt-cpp** pour l'auth
 - **libpqxx** + **PostgreSQL** pour la persistance
 - **GoogleTest** pour les tests
 - **clang-format** pour le formatage

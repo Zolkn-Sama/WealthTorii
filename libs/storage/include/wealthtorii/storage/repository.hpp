@@ -17,6 +17,31 @@
 
 namespace wealthtorii::storage {
 
+    // Application user (login + freemium plan). Distinct from ledger::Account.
+    struct User {
+        std::string id;
+        std::string email;
+        std::string password_hash; // self-contained Argon2id string
+        std::string plan = "free"; // "free" | "premium"
+    };
+
+    class UserRepository {
+    public:
+        explicit UserRepository(Connection& conn) noexcept : conn_(&conn) {}
+
+        // Inserts the user. Returns false if the email is already taken.
+        bool create(const User& user);
+
+        [[nodiscard]] std::optional<User> find_by_email(std::string_view email) const;
+        [[nodiscard]] std::optional<User> find_by_id(std::string_view id) const;
+
+        // Updates the plan ("free"|"premium"). Returns false if the id is unknown.
+        bool set_plan(std::string_view id, std::string_view plan);
+
+    private:
+        Connection* conn_;
+    };
+
     struct UpsertStats {
         std::size_t inserted = 0;
         std::size_t updated = 0;
@@ -39,6 +64,21 @@ namespace wealthtorii::storage {
 
         [[nodiscard]] std::optional<ledger::Account> find(std::string_view id) const;
         [[nodiscard]] std::vector<ledger::Account> all() const;
+
+        // --- user-scoped (multi-tenant) variants used by the API ---
+        // Each binds the row to user_id; queries filter on it so one user never
+        // sees another's accounts. The CLI keeps using the user-less overloads.
+        bool ensure(const ledger::Account& account, std::string_view user_id);
+        bool update(const ledger::Account& account, std::string_view user_id);
+        bool remove(std::string_view id, std::string_view user_id);
+        [[nodiscard]] std::optional<ledger::Account> find(std::string_view id,
+                                                          std::string_view user_id) const;
+        [[nodiscard]] std::vector<ledger::Account> all(std::string_view user_id) const;
+
+        // Returns the owning user_id of an account (NULL/absent -> nullopt).
+        // Used to enforce transaction tenancy via the parent account.
+        [[nodiscard]] std::optional<std::string> owner_of(
+            std::string_view account_id) const;
 
     private:
         Connection* conn_;

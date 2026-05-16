@@ -4,6 +4,11 @@
   "dependencies": [
     "gtest",
     "libpqxx",
-    "drogon"
+    "drogon",
+    "libsodium",
+    {
+      "name": "jwt-cpp",
+      "features": ["picojson"]
+    }
   ]
 }

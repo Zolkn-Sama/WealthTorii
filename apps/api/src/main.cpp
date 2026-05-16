@@ -1,3 +1,4 @@
+#include "auth.hpp"
 #include "json_support.hpp"
 #include "openapi.hpp"
 
@@ -51,6 +52,12 @@ namespace {
                     drogon::HttpStatusCode code = drogon::k400BadRequest) {
         send_json(cb, api::error_json(message), code);
     }
+
+    // Forward declarations — auth/tenancy helpers are defined alongside the
+    // CRUD section but used earlier by the DB-backed report/suggest/export.
+    std::string uid_of(const HttpRequestPtr& req);
+    bool require_account_owner(const HttpRequestPtr& req, const Callback& cb,
+                               const std::string& account);
 
     // Builds the layered categorizer used by the CLI: user rules first, defaults appended.
     import_::Categorizer make_categorizer() {
@@ -519,6 +526,9 @@ namespace {
                 return send_error(cb, "'month' must be YYYY-MM");
             }
         }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
         std::string err;
         auto journal = journal_from_db(account, err);
         if (!journal.has_value()) {
@@ -683,7 +693,8 @@ namespace {
             storage::apply_default_migrations(conn);
             storage::AccountRepository accounts{conn};
             accounts.ensure(ledger::Account{up.account, up.account, cfg.currency,
-                                            ledger::AccountType::CASH});
+                                            ledger::AccountType::CASH},
+                            uid_of(req));
             storage::TransactionRepository txs{conn};
             const auto stats = txs.upsert(imp.transactions);
 
@@ -801,6 +812,9 @@ namespace {
                 return send_error(cb, "'ending' must be YYYY-MM");
             }
         }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
         std::string err;
         auto journal = journal_from_db(account, err);
         if (!journal.has_value()) {
@@ -914,7 +928,61 @@ namespace {
         }
     }
 
-    void h_accounts_get_all(const HttpRequestPtr&, Callback&& cb) {
+    // ---- auth gating ---------------------------------------------------------
+
+    bool is_public_path(const std::string& p) {
+        return p == "/" || p == "/swagger" || p == "/openapi.json" ||
+               p == "/api/auth/register" || p == "/api/auth/login";
+    }
+
+    // Premium (paid) surface. Everything else under /api/ is free but still
+    // requires a valid token. Prefix match covers /{id} path params.
+    bool is_premium_path(const std::string& p) {
+        static const std::array<std::string_view, 6> prefixes{
+            "/api/report", "/api/suggest", "/api/export",
+            "/api/sync",   "/api/accounts", "/api/transactions"};
+        for (const auto pre : prefixes) {
+            if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Authenticated user id, stamped on the request by the pre-handling advice.
+    std::string uid_of(const HttpRequestPtr& req) {
+        return req->getAttributes()->get<std::string>("uid");
+    }
+
+    // Ensures `account` exists and belongs to the caller; otherwise sends the
+    // error response itself and returns false.
+    bool require_account_owner(const HttpRequestPtr& req, const Callback& cb,
+                               const std::string& account) {
+        auto db = open_db(cb);
+        if (!db) {
+            return false;
+        }
+        try {
+            storage::AccountRepository ar{*db};
+            if (!ar.find(account, uid_of(req)).has_value()) {
+                send_error(cb, "account '" + account + "' not found",
+                           drogon::k404NotFound);
+                return false;
+            }
+            return true;
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+            return false;
+        }
+    }
+
+    // True if `account` exists and belongs to `uid`.
+    bool owns_account(storage::AccountRepository& ar, const std::string& account,
+                      const std::string& uid) {
+        return ar.find(account, uid).has_value();
+    }
+
+    void h_accounts_get_all(const HttpRequestPtr& req, Callback&& cb) {
         auto db = open_db(cb);
         if (!db) {
             return;
@@ -922,7 +990,7 @@ namespace {
         try {
             const storage::AccountRepository repo{*db};
             Json::Value arr(Json::arrayValue);
-            for (const auto& a : repo.all()) {
+            for (const auto& a : repo.all(uid_of(req))) {
                 arr.append(account_json(a));
             }
             Json::Value out(Json::objectValue);
@@ -933,14 +1001,15 @@ namespace {
         }
     }
 
-    void h_accounts_get_one(const HttpRequestPtr&, Callback&& cb, std::string id) {
+    void h_accounts_get_one(const HttpRequestPtr& req, Callback&& cb,
+                            std::string id) {
         auto db = open_db(cb);
         if (!db) {
             return;
         }
         try {
             const storage::AccountRepository repo{*db};
-            const auto a = repo.find(id);
+            const auto a = repo.find(id, uid_of(req));
             if (!a.has_value()) {
                 return send_error(cb, "account '" + id + "' not found",
                                   drogon::k404NotFound);
@@ -969,7 +1038,7 @@ namespace {
         }
         try {
             storage::AccountRepository repo{*db};
-            if (!repo.ensure(*account)) {
+            if (!repo.ensure(*account, uid_of(req))) {
                 return send_error(cb, "account '" + id + "' already exists",
                                   drogon::k409Conflict);
             }
@@ -995,7 +1064,7 @@ namespace {
         }
         try {
             storage::AccountRepository repo{*db};
-            if (!repo.update(*account)) {
+            if (!repo.update(*account, uid_of(req))) {
                 return send_error(cb, "account '" + id + "' not found",
                                   drogon::k404NotFound);
             }
@@ -1005,14 +1074,15 @@ namespace {
         }
     }
 
-    void h_accounts_delete(const HttpRequestPtr&, Callback&& cb, std::string id) {
+    void h_accounts_delete(const HttpRequestPtr& req, Callback&& cb,
+                           std::string id) {
         auto db = open_db(cb);
         if (!db) {
             return;
         }
         try {
             storage::AccountRepository repo{*db};
-            if (!repo.remove(id)) {
+            if (!repo.remove(id, uid_of(req))) {
                 return send_error(cb, "account '" + id + "' not found",
                                   drogon::k404NotFound);
             }
@@ -1041,6 +1111,11 @@ namespace {
             return;
         }
         try {
+            storage::AccountRepository accounts{*db};
+            if (!owns_account(accounts, account, uid_of(req))) {
+                return send_error(cb, "account '" + account + "' not found",
+                                  drogon::k404NotFound);
+            }
             const storage::TransactionRepository repo{*db};
             const auto rows = month.has_value() ? repo.for_month(account, *month)
                                                 : repo.for_account(account);
@@ -1058,7 +1133,7 @@ namespace {
         }
     }
 
-    void h_tx_get_one(const HttpRequestPtr&, Callback&& cb, std::string id) {
+    void h_tx_get_one(const HttpRequestPtr& req, Callback&& cb, std::string id) {
         auto db = open_db(cb);
         if (!db) {
             return;
@@ -1066,7 +1141,9 @@ namespace {
         try {
             const storage::TransactionRepository repo{*db};
             const auto t = repo.find(id);
-            if (!t.has_value()) {
+            const storage::AccountRepository accounts{*db};
+            if (!t.has_value() ||
+                accounts.owner_of(t->account_id()) != uid_of(req)) {
                 return send_error(cb, "transaction '" + id + "' not found",
                                   drogon::k404NotFound);
             }
@@ -1093,6 +1170,12 @@ namespace {
             return;
         }
         try {
+            storage::AccountRepository accounts{*db};
+            if (!owns_account(accounts, t->account_id(), uid_of(req))) {
+                return send_error(cb, "account '" + t->account_id() +
+                                          "' not found for this user",
+                                  drogon::k404NotFound);
+            }
             storage::TransactionRepository repo{*db};
             if (repo.find(id).has_value()) {
                 return send_error(cb, "transaction '" + id + "' already exists",
@@ -1121,30 +1204,42 @@ namespace {
             return;
         }
         try {
-            storage::TransactionRepository repo{*db};
-            if (!repo.find(id).has_value()) {
+            const storage::TransactionRepository repo{*db};
+            const auto existing = repo.find(id);
+            storage::AccountRepository accounts{*db};
+            if (!existing.has_value() ||
+                accounts.owner_of(existing->account_id()) != uid_of(req)) {
                 return send_error(cb, "transaction '" + id + "' not found",
                                   drogon::k404NotFound);
             }
+            if (!owns_account(accounts, t->account_id(), uid_of(req))) {
+                return send_error(cb, "account '" + t->account_id() +
+                                          "' not found for this user",
+                                  drogon::k404NotFound);
+            }
             const ledger::Transaction one[] = {*t};
-            repo.upsert(one);
+            storage::TransactionRepository{*db}.upsert(one);
             send_json(cb, transaction_json(*t));
         } catch (const std::exception& e) {
             send_error(cb, e.what(), drogon::k500InternalServerError);
         }
     }
 
-    void h_tx_delete(const HttpRequestPtr&, Callback&& cb, std::string id) {
+    void h_tx_delete(const HttpRequestPtr& req, Callback&& cb, std::string id) {
         auto db = open_db(cb);
         if (!db) {
             return;
         }
         try {
             storage::TransactionRepository repo{*db};
-            if (!repo.remove(id)) {
+            const auto existing = repo.find(id);
+            const storage::AccountRepository accounts{*db};
+            if (!existing.has_value() ||
+                accounts.owner_of(existing->account_id()) != uid_of(req)) {
                 return send_error(cb, "transaction '" + id + "' not found",
                                   drogon::k404NotFound);
             }
+            repo.remove(id);
             Json::Value out(Json::objectValue);
             out["deleted"] = id;
             send_json(cb, out);
@@ -1238,6 +1333,100 @@ namespace {
         h_rules_get(req, std::move(cb));
     }
 
+    // ---- auth: register / login / me ----------------------------------------
+
+    Json::Value user_json(const storage::User& u) {
+        Json::Value v(Json::objectValue);
+        v["id"] = u.id;
+        v["email"] = u.email;
+        v["plan"] = u.plan;
+        return v;
+    }
+
+    Json::Value session_json(const storage::User& u) {
+        Json::Value v(Json::objectValue);
+        v["token"] = api::auth::make_token(u);
+        v["token_type"] = "Bearer";
+        v["user"] = user_json(u);
+        return v;
+    }
+
+    void h_register(const HttpRequestPtr& req, Callback&& cb) {
+        const auto body = req->getJsonObject();
+        if (!body || !body->isMember("email") || !body->isMember("password")) {
+            return send_error(cb, "JSON body with 'email' and 'password' is required");
+        }
+        const auto email = (*body)["email"].asString();
+        const auto password = (*body)["password"].asString();
+        if (email.find('@') == std::string::npos) {
+            return send_error(cb, "invalid email");
+        }
+        if (password.size() < 8) {
+            return send_error(cb, "password must be at least 8 characters");
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::User u;
+            u.id = api::auth::new_id();
+            u.email = email;
+            u.password_hash = api::auth::hash_password(password);
+            u.plan = "free";
+            storage::UserRepository repo{*db};
+            if (!repo.create(u)) {
+                return send_error(cb, "email already registered",
+                                  drogon::k409Conflict);
+            }
+            send_json(cb, session_json(u), drogon::k201Created);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_login(const HttpRequestPtr& req, Callback&& cb) {
+        const auto body = req->getJsonObject();
+        if (!body || !body->isMember("email") || !body->isMember("password")) {
+            return send_error(cb, "JSON body with 'email' and 'password' is required");
+        }
+        const auto email = (*body)["email"].asString();
+        const auto password = (*body)["password"].asString();
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::UserRepository repo{*db};
+            const auto u = repo.find_by_email(email);
+            if (!u.has_value() ||
+                !api::auth::verify_password(u->password_hash, password)) {
+                return send_error(cb, "invalid email or password",
+                                  drogon::k401Unauthorized);
+            }
+            send_json(cb, session_json(*u));
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_me(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::UserRepository repo{*db};
+            const auto u = repo.find_by_id(uid_of(req));
+            if (!u.has_value()) {
+                return send_error(cb, "user not found", drogon::k404NotFound);
+            }
+            send_json(cb, user_json(*u));
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -1304,6 +1493,68 @@ int main() {
     app.registerHandler("/api/transactions/{id}", &h_tx_get_one, {Get});
     app.registerHandler("/api/transactions/{id}", &h_tx_put, {Put});
     app.registerHandler("/api/transactions/{id}", &h_tx_delete, {Delete});
+
+    // ---- auth ----------------------------------------------------------------
+    app.registerHandler("/api/auth/register", &h_register, {Post});
+    app.registerHandler("/api/auth/login", &h_login, {Post});
+    app.registerHandler("/api/auth/me", &h_me, {Get});
+
+    // Gate every /api/* route (except register/login): require a valid Bearer
+    // token, enforce the premium plan on paid endpoints, and stamp the user id
+    // on the request for the handlers' tenant scoping.
+    app.registerPreHandlingAdvice(
+        [](const HttpRequestPtr& req,
+           std::function<void(const HttpResponsePtr&)>&& stop,
+           std::function<void()>&& next) {
+            const std::string path = req->path();
+            if (is_public_path(path) || path.rfind("/api/", 0) != 0) {
+                next();
+                return;
+            }
+            auto deny = [&](const char* msg, HttpStatusCode code) {
+                auto resp = HttpResponse::newHttpJsonResponse(
+                    wealthtorii::api::error_json(msg));
+                resp->setStatusCode(code);
+                stop(resp);
+            };
+            const auto tok = wealthtorii::api::auth::bearer(
+                req->getHeader("Authorization"));
+            if (!tok.has_value()) {
+                return deny("missing or malformed Authorization: Bearer <token>",
+                            k401Unauthorized);
+            }
+            const auto claims = wealthtorii::api::auth::verify_token(*tok);
+            if (!claims.has_value()) {
+                return deny("invalid or expired token", k401Unauthorized);
+            }
+            if (is_premium_path(path) && claims->plan != "premium") {
+                return deny("this feature requires a premium plan",
+                            k402PaymentRequired);
+            }
+            req->getAttributes()->insert("uid", claims->user_id);
+            req->getAttributes()->insert("plan", claims->plan);
+            req->getAttributes()->insert("email", claims->email);
+            next();
+        });
+
+    if (!wealthtorii::api::auth::ensure_sodium()) {
+        LOG_ERROR << "libsodium initialisation failed";
+        return 1;
+    }
+    if (const auto url =
+            wealthtorii::storage::Connection::database_url_from_env();
+        url.has_value()) {
+        try {
+            wealthtorii::storage::Connection conn{*url};
+            wealthtorii::storage::apply_default_migrations(conn);
+            LOG_INFO << "database migrations applied";
+        } catch (const std::exception& e) {
+            LOG_WARN << "could not apply migrations at startup: " << e.what();
+        }
+    } else {
+        LOG_WARN << "$DATABASE_URL not set — auth and persistence endpoints "
+                    "will return 500";
+    }
 
     const std::uint16_t port = 8080;
     LOG_INFO << "WealthTorii API on http://127.0.0.1:" << port
