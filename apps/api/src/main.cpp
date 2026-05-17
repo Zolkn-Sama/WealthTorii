@@ -174,6 +174,7 @@ namespace {
         v["id"] = b.id;
         v["name"] = b.name;
         v["currency"] = b.currency;
+        v["type"] = b.type;
         v["opening_balance"] = api::money_json(money::Money(b.opening_balance, cur));
         v["balance"] = api::money_json(money::Money(b.current_balance, cur));
         return v;

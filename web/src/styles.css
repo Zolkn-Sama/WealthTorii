@@ -168,3 +168,30 @@ th { color: var(--muted); font-weight: 500; }
 }
 .legend .sw-in { background: #3fb950; }
 .legend .sw-out { background: var(--error); }
+
+td.actions, .actions {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+.goal-head .actions { gap: 0.45rem; }
+button.mini {
+  background: #222732;
+  color: var(--fg);
+  padding: 0.2rem 0.45rem;
+  font-size: 0.8rem;
+  font-weight: 400;
+  border-radius: 6px;
+}
+button.mini.danger { background: #3a2230; color: #ff9b9b; }
+button.mini:hover { filter: brightness(1.3); }
+
+.acc-sel {
+  margin-bottom: 0.6rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #0f1218;
+  color: var(--fg);
+}

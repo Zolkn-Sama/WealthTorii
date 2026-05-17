@@ -63,7 +63,7 @@ export const api = {
   me: () => request<{ id: string; email: string; plan: string }>("GET", "/api/auth/me"),
   networth: () =>
     request<{
-      accounts: Array<{ id: string; name: string; currency: string; balance: Money; opening_balance: Money }>;
+      accounts: Array<{ id: string; name: string; currency: string; type: string; balance: Money; opening_balance: Money }>;
       totals: Array<{ currency: string; net_worth: Money; opening_balance: Money }>;
     }>("GET", "/api/networth"),
   goals: () =>
@@ -137,6 +137,61 @@ export const api = {
       "POST",
       `/api/goals/${encodeURIComponent(goalId)}/contributions`,
       b,
+    ),
+
+  // ---- updates / deletes ----
+  updateAccount: (
+    id: string,
+    b: { name: string; currency: string; type: string; opening_balance?: string },
+  ) =>
+    request<unknown>("PUT", `/api/accounts/${encodeURIComponent(id)}`, b),
+  deleteAccount: (id: string) =>
+    request<unknown>("DELETE", `/api/accounts/${encodeURIComponent(id)}`),
+
+  deleteBudget: (category: string) =>
+    request<unknown>(
+      "DELETE",
+      `/api/budget/${encodeURIComponent(category)}`,
+    ),
+
+  updateGoal: (
+    id: string,
+    b: { name: string; target: string; currency?: string; target_date?: string },
+  ) => request<unknown>("PUT", `/api/goals/${encodeURIComponent(id)}`, b),
+  deleteGoal: (id: string) =>
+    request<unknown>("DELETE", `/api/goals/${encodeURIComponent(id)}`),
+
+  listTransactions: (account: string) =>
+    request<{
+      account: string;
+      count: number;
+      transactions: Array<{
+        id: string;
+        account_id: string;
+        date: string;
+        amount: Money;
+        description: string;
+        category_id: string | null;
+      }>;
+    }>(
+      "GET",
+      `/api/transactions?account=${encodeURIComponent(account)}`,
+    ),
+  updateTransaction: (
+    id: string,
+    b: {
+      account_id: string;
+      date: string;
+      amount: string;
+      description?: string;
+      category_id?: string;
+    },
+  ) =>
+    request<unknown>("PUT", `/api/transactions/${encodeURIComponent(id)}`, b),
+  deleteTransaction: (id: string) =>
+    request<unknown>(
+      "DELETE",
+      `/api/transactions/${encodeURIComponent(id)}`,
     ),
 };
 

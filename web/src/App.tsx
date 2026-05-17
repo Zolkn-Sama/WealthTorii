@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
-import { api, tokenStore, type ApiResult } from "./api";
+import { api, tokenStore, type ApiResult, type Money } from "./api";
 import { TrendsChart } from "./TrendsChart";
 
 export function App() {
@@ -92,20 +92,20 @@ type Field = {
   options?: Array<{ value: string; label: string }>;
 };
 
-// Minimal inline form: collects field values, calls submit, shows the error
-// or resets and calls onDone on success.
 function InlineForm({
   fields,
   submitLabel,
+  initial,
   onSubmit,
   onDone,
 }: {
   fields: Field[];
   submitLabel: string;
+  initial?: Record<string, string>;
   onSubmit: (v: Record<string, string>) => Promise<ApiResult<unknown>>;
   onDone: () => void;
 }) {
-  const [v, setV] = useState<Record<string, string>>({});
+  const [v, setV] = useState<Record<string, string>>(initial ?? {});
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
@@ -116,8 +116,7 @@ function InlineForm({
     const r = await onSubmit(v);
     setBusy(false);
     if (r.ok) {
-      setV({});
-      (e.target as HTMLFormElement).reset();
+      if (!initial) setV({});
       onDone();
     } else {
       setErr(r.status === 402 ? "🔒 premium requis" : r.error);
@@ -188,8 +187,27 @@ type R<T> = ApiResult<T> | null;
 type DataOf<F extends (...a: never[]) => unknown> =
   Awaited<ReturnType<F>> extends ApiResult<infer U> ? U : never;
 
-function uuid() {
-  return crypto.randomUUID();
+const uuid = () => crypto.randomUUID();
+const moneyInput = (m: Money) => (m.minor_units / 100).toFixed(2);
+
+function IconBtn({
+  label,
+  onClick,
+  danger,
+}: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      className={danger ? "mini danger" : "mini"}
+      onClick={onClick}
+    >
+      {label}
+    </button>
+  );
 }
 
 function Dashboard({ onLogout }: { onLogout: () => void }) {
@@ -199,17 +217,36 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [budget, setBudget] = useState<R<DataOf<typeof api.getBudget>>>(null);
   const [trends, setTrends] = useState<R<DataOf<typeof api.trends>>>(null);
   const [forecast, setForecast] = useState<R<DataOf<typeof api.forecast>>>(null);
+  const [txs, setTxs] = useState<R<DataOf<typeof api.listTransactions>>>(null);
+
+  const [selAcc, setSelAcc] = useState("");
+  const [editAcc, setEditAcc] = useState<string | null>(null);
+  const [editGoal, setEditGoal] = useState<string | null>(null);
+  const [editTx, setEditTx] = useState<string | null>(null);
+
+  const loadTxs = useCallback((acc: string) => {
+    if (!acc) {
+      setTxs(null);
+      return;
+    }
+    api.listTransactions(acc).then(setTxs);
+  }, []);
 
   const loadNw = useCallback(() => {
     api.networth().then((r) => {
       setNw(r);
       if (r.ok && r.data.accounts.length > 0) {
-        const acc = r.data.accounts[0].id;
-        api.trends(acc).then(setTrends);
-        api.forecast(acc).then(setForecast);
+        const first = r.data.accounts[0].id;
+        setSelAcc((cur) => {
+          const acc = cur || first;
+          api.trends(acc).then(setTrends);
+          api.forecast(acc).then(setForecast);
+          loadTxs(acc);
+          return acc;
+        });
       }
     });
-  }, []);
+  }, [loadTxs]);
   const loadGoals = useCallback(() => api.goals().then(setGoals), []);
   const loadBudget = useCallback(() => api.getBudget().then(setBudget), []);
 
@@ -219,6 +256,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
     loadGoals();
     loadBudget();
   }, [loadNw, loadGoals, loadBudget]);
+
+  function selectAccount(acc: string) {
+    setSelAcc(acc);
+    api.trends(acc).then(setTrends);
+    api.forecast(acc).then(setForecast);
+    loadTxs(acc);
+  }
 
   const accountOptions =
     nw && nw.ok
@@ -254,8 +298,73 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <tbody>
                   {d.accounts.map((a) => (
                     <tr key={a.id}>
-                      <td>{a.name}</td>
+                      <td>
+                        {a.name}
+                        <span className="muted small"> · {a.type}</span>
+                        {editAcc === a.id && (
+                          <InlineForm
+                            fields={[
+                              { name: "name", label: "nom", required: true },
+                              {
+                                name: "type",
+                                label: "type",
+                                required: true,
+                                options: [
+                                  "CASH",
+                                  "BROKERAGE",
+                                  "CRYPTO",
+                                  "SAVINGS",
+                                  "EXTERNAL",
+                                ].map((x) => ({ value: x, label: x })),
+                              },
+                              {
+                                name: "opening_balance",
+                                label: "solde initial",
+                              },
+                            ]}
+                            initial={{
+                              name: a.name,
+                              type: a.type,
+                              opening_balance: moneyInput(a.opening_balance),
+                            }}
+                            submitLabel="Enregistrer"
+                            onSubmit={(v) =>
+                              api.updateAccount(a.id, {
+                                name: v.name,
+                                type: v.type,
+                                currency: a.currency,
+                                opening_balance: v.opening_balance || undefined,
+                              })
+                            }
+                            onDone={() => {
+                              setEditAcc(null);
+                              loadNw();
+                            }}
+                          />
+                        )}
+                      </td>
                       <td className="num">{a.balance.display}</td>
+                      <td className="actions">
+                        <IconBtn
+                          label="✎"
+                          onClick={() =>
+                            setEditAcc(editAcc === a.id ? null : a.id)
+                          }
+                        />
+                        <IconBtn
+                          label="🗑"
+                          danger
+                          onClick={() => {
+                            if (
+                              confirm(
+                                `Supprimer le compte "${a.name}" et ses transactions ?`,
+                              )
+                            ) {
+                              api.deleteAccount(a.id).then(loadNw);
+                            }
+                          }}
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -266,7 +375,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                   fields={[
                     { name: "id", label: "id (ex: bp-main)", required: true },
                     { name: "name", label: "nom", required: true },
-                    { name: "opening_balance", label: "solde initial (ex: 1500,00)" },
+                    { name: "opening_balance", label: "solde initial" },
                   ]}
                   submitLabel="Créer"
                   onSubmit={(v) =>
@@ -283,45 +392,126 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
           )}
         </Section>
 
-        <Section title="Transactions" result={nw}>
-          {() => (
-            <div className="addbox">
-              <span className="muted small">Nouvelle transaction</span>
-              {accountOptions.length === 0 ? (
-                <p className="muted small">Créez d'abord un compte.</p>
-              ) : (
-                <InlineForm
-                  fields={[
-                    {
-                      name: "account_id",
-                      label: "compte",
-                      required: true,
-                      options: accountOptions,
-                    },
-                    { name: "date", label: "date", type: "date", required: true },
-                    {
-                      name: "amount",
-                      label: "montant (-12,90 = dépense)",
-                      required: true,
-                    },
-                    { name: "description", label: "libellé" },
-                    { name: "category_id", label: "catégorie (optionnel)" },
-                  ]}
-                  submitLabel="Ajouter"
-                  onSubmit={(v) =>
-                    api.createTransaction({
-                      id: uuid(),
-                      account_id: v.account_id,
-                      date: v.date,
-                      amount: v.amount,
-                      description: v.description || undefined,
-                      category_id: v.category_id || undefined,
-                    })
-                  }
-                  onDone={loadNw}
-                />
+        <Section title="Transactions" result={txs}>
+          {(d) => (
+            <>
+              {accountOptions.length > 1 && (
+                <select
+                  className="acc-sel"
+                  value={selAcc}
+                  onChange={(e) => selectAccount(e.target.value)}
+                >
+                  {accountOptions.map((o) => (
+                    <option key={o.value} value={o.value}>
+                      {o.label}
+                    </option>
+                  ))}
+                </select>
               )}
-            </div>
+              <table>
+                <tbody>
+                  {d.transactions.length === 0 && (
+                    <tr>
+                      <td className="muted">Aucune transaction.</td>
+                    </tr>
+                  )}
+                  {d.transactions.map((t) => (
+                    <tr key={t.id}>
+                      <td>
+                        <span className="muted small">{t.date}</span>{" "}
+                        {t.description}
+                        {editTx === t.id && (
+                          <InlineForm
+                            fields={[
+                              { name: "date", label: "date", type: "date", required: true },
+                              { name: "amount", label: "montant", required: true },
+                              { name: "description", label: "libellé" },
+                              { name: "category_id", label: "catégorie" },
+                            ]}
+                            initial={{
+                              date: t.date,
+                              amount: moneyInput(t.amount),
+                              description: t.description,
+                              category_id: t.category_id ?? "",
+                            }}
+                            submitLabel="Enregistrer"
+                            onSubmit={(v) =>
+                              api.updateTransaction(t.id, {
+                                account_id: t.account_id,
+                                date: v.date,
+                                amount: v.amount,
+                                description: v.description || undefined,
+                                category_id: v.category_id || undefined,
+                              })
+                            }
+                            onDone={() => {
+                              setEditTx(null);
+                              loadTxs(selAcc);
+                              loadNw();
+                            }}
+                          />
+                        )}
+                      </td>
+                      <td className="num">{t.amount.display}</td>
+                      <td className="actions">
+                        <IconBtn
+                          label="✎"
+                          onClick={() =>
+                            setEditTx(editTx === t.id ? null : t.id)
+                          }
+                        />
+                        <IconBtn
+                          label="🗑"
+                          danger
+                          onClick={() => {
+                            if (confirm("Supprimer cette transaction ?")) {
+                              api.deleteTransaction(t.id).then(() => {
+                                loadTxs(selAcc);
+                                loadNw();
+                              });
+                            }
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="addbox">
+                <span className="muted small">Nouvelle transaction</span>
+                {accountOptions.length === 0 ? (
+                  <p className="muted small">Créez d'abord un compte.</p>
+                ) : (
+                  <InlineForm
+                    fields={[
+                      { name: "date", label: "date", type: "date", required: true },
+                      {
+                        name: "amount",
+                        label: "montant (-12,90 = dépense)",
+                        required: true,
+                      },
+                      { name: "description", label: "libellé" },
+                      { name: "category_id", label: "catégorie" },
+                    ]}
+                    submitLabel="Ajouter"
+                    onSubmit={(v) =>
+                      api.createTransaction({
+                        id: uuid(),
+                        account_id: selAcc,
+                        date: v.date,
+                        amount: v.amount,
+                        description: v.description || undefined,
+                        category_id: v.category_id || undefined,
+                      })
+                    }
+                    onDone={() => {
+                      loadTxs(selAcc);
+                      loadNw();
+                    }}
+                  />
+                )}
+              </div>
+            </>
           )}
         </Section>
 
@@ -337,6 +527,17 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                       <tr key={l.category}>
                         <td>{l.category}</td>
                         <td className="num">{l.limit.display}</td>
+                        <td className="actions">
+                          <IconBtn
+                            label="🗑"
+                            danger
+                            onClick={() => {
+                              if (confirm(`Supprimer la limite "${l.category}" ?`)) {
+                                api.deleteBudget(l.category).then(loadBudget);
+                              }
+                            }}
+                          />
+                        </td>
                       </tr>
                     ))}
                     <tr>
@@ -346,16 +547,19 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                       <td className="num">
                         <b>{d.total.display}</b>
                       </td>
+                      <td />
                     </tr>
                   </tbody>
                 </table>
               )}
               <div className="addbox">
-                <span className="muted small">Définir une limite</span>
+                <span className="muted small">
+                  Définir / modifier une limite
+                </span>
                 <InlineForm
                   fields={[
                     { name: "category", label: "catégorie", required: true },
-                    { name: "amount", label: "montant (ex: 300,00)", required: true },
+                    { name: "amount", label: "montant", required: true },
                   ]}
                   submitLabel="Enregistrer"
                   onSubmit={(v) =>
@@ -375,8 +579,25 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                 <div key={g.id} className="goal">
                   <div className="goal-head">
                     <b>{g.name}</b>
-                    <span>
-                      {g.saved.display} / {g.target.display}
+                    <span className="actions">
+                      <span>
+                        {g.saved.display} / {g.target.display}
+                      </span>
+                      <IconBtn
+                        label="✎"
+                        onClick={() =>
+                          setEditGoal(editGoal === g.id ? null : g.id)
+                        }
+                      />
+                      <IconBtn
+                        label="🗑"
+                        danger
+                        onClick={() => {
+                          if (confirm(`Supprimer l'objectif "${g.name}" ?`)) {
+                            api.deleteGoal(g.id).then(loadGoals);
+                          }
+                        }}
+                      />
                     </span>
                   </div>
                   <div className="bar">
@@ -392,23 +613,50 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                       ? ` · ${g.required_monthly.display}/mois`
                       : ""}
                   </div>
-                  <InlineForm
-                    fields={[
-                      { name: "amount", label: "contribuer (ex: 200,00)", required: true },
-                      { name: "note", label: "note" },
-                    ]}
-                    submitLabel="+"
-                    onSubmit={(v) =>
-                      api.addContribution(g.id, {
-                        amount: v.amount,
-                        note: v.note || undefined,
-                      })
-                    }
-                    onDone={() => {
-                      loadGoals();
-                      loadNw();
-                    }}
-                  />
+                  {editGoal === g.id ? (
+                    <InlineForm
+                      fields={[
+                        { name: "name", label: "nom", required: true },
+                        { name: "target", label: "cible", required: true },
+                        { name: "target_date", label: "échéance", type: "date" },
+                      ]}
+                      initial={{
+                        name: g.name,
+                        target: moneyInput(g.target),
+                        target_date: g.target_date ?? "",
+                      }}
+                      submitLabel="Enregistrer"
+                      onSubmit={(v) =>
+                        api.updateGoal(g.id, {
+                          name: v.name,
+                          target: v.target,
+                          target_date: v.target_date || undefined,
+                        })
+                      }
+                      onDone={() => {
+                        setEditGoal(null);
+                        loadGoals();
+                      }}
+                    />
+                  ) : (
+                    <InlineForm
+                      fields={[
+                        { name: "amount", label: "contribuer", required: true },
+                        { name: "note", label: "note" },
+                      ]}
+                      submitLabel="+"
+                      onSubmit={(v) =>
+                        api.addContribution(g.id, {
+                          amount: v.amount,
+                          note: v.note || undefined,
+                        })
+                      }
+                      onDone={() => {
+                        loadGoals();
+                        loadNw();
+                      }}
+                    />
+                  )}
                 </div>
               ))}
               <div className="addbox">
