@@ -47,6 +47,7 @@ namespace wealthtorii::api {
     { "name": "rules", "description": "Regles de categorisation utilisateur" },
     { "name": "storage", "description": "Persistance Postgres" },
     { "name": "analytics", "description": "Suggestions de budget" },
+    { "name": "goals", "description": "Objectifs d'epargne (projets saving)" },
     { "name": "export", "description": "Export CSV" }
   ],
   "paths": {
@@ -350,6 +351,79 @@ namespace wealthtorii::api {
         }
       }
     },
+    "/api/goals": {
+      "get": {
+        "tags": ["goals"],
+        "summary": "Liste les objectifs d'epargne avec progression",
+        "responses": {
+          "200": { "description": "Objectifs", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      },
+      "post": {
+        "tags": ["goals"],
+        "summary": "Cree un objectif d'epargne",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalInput" } } } },
+        "responses": {
+          "201": { "description": "Objectif cree", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
+        }
+      }
+    },
+    "/api/goals/{id}": {
+      "get": {
+        "tags": ["goals"],
+        "summary": "Un objectif (avec progression et mensualite requise)",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Objectif", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      },
+      "put": {
+        "tags": ["goals"],
+        "summary": "Met a jour un objectif",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalInput" } } } },
+        "responses": {
+          "200": { "description": "Objectif mis a jour", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      },
+      "delete": {
+        "tags": ["goals"],
+        "summary": "Supprime un objectif (et ses contributions)",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Objectif supprime", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/goals/{id}/contributions": {
+      "get": {
+        "tags": ["goals"],
+        "summary": "Liste les contributions d'un objectif",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Contributions", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      },
+      "post": {
+        "tags": ["goals"],
+        "summary": "Ajoute une contribution (montant negatif = retrait)",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ContributionInput" } } } },
+        "responses": {
+          "201": { "description": "Objectif mis a jour", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
     "/api/transactions": {
       "get": {
         "tags": ["transactions"],
@@ -642,6 +716,41 @@ namespace wealthtorii::api {
           "months": { "type": "integer" },
           "ending": { "type": "string" },
           "suggestions": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "GoalInput": {
+        "type": "object",
+        "required": ["name","target"],
+        "properties": {
+          "name": { "type": "string", "example": "Voyage Japon" },
+          "target": { "type": "string", "example": "5000,00", "description": "Montant cible (>0). String FR/EN ou entier mineur." },
+          "currency": { "type": "string", "enum": ["EUR","USD","CHF"], "default": "EUR" },
+          "target_date": { "type": "string", "example": "2026-12-31", "nullable": true, "description": "Echeance optionnelle YYYY-MM-DD" }
+        }
+      },
+      "Goal": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "name": { "type": "string" },
+          "currency": { "type": "string" },
+          "target": { "$ref": "#/components/schemas/Money" },
+          "saved": { "$ref": "#/components/schemas/Money" },
+          "remaining": { "$ref": "#/components/schemas/Money" },
+          "progress_pct": { "type": "number" },
+          "reached": { "type": "boolean" },
+          "target_date": { "type": "string", "nullable": true },
+          "months_left": { "type": "integer" },
+          "required_monthly": { "$ref": "#/components/schemas/Money" }
+        }
+      },
+      "ContributionInput": {
+        "type": "object",
+        "required": ["amount"],
+        "properties": {
+          "amount": { "type": "string", "example": "250,00", "description": "Montant. Negatif = retrait. String FR/EN ou entier mineur." },
+          "date": { "type": "string", "example": "2026-05-17", "description": "YYYY-MM-DD, defaut aujourd'hui" },
+          "note": { "type": "string" }
         }
       }
     }
