@@ -225,6 +225,7 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [editGoal, setEditGoal] = useState<string | null>(null);
   const [editTx, setEditTx] = useState<string | null>(null);
   const [editPos, setEditPos] = useState<string | null>(null);
+  const [pfMsg, setPfMsg] = useState("");
 
   const loadTxs = useCallback((acc: string) => {
     if (!acc) {
@@ -885,6 +886,34 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
                     loadNw();
                   }}
                 />
+                <div className="iform">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      setPfMsg("Rafraîchissement…");
+                      const r = await api.refreshPrices();
+                      if (r.ok) {
+                        setPfMsg(
+                          `${r.data.refreshed.length} prix mis à jour` +
+                            (r.data.failed.length
+                              ? `, ${r.data.failed.length} échec(s)`
+                              : ""),
+                        );
+                        loadPf();
+                        loadNw();
+                      } else {
+                        setPfMsg(
+                          r.status === 402
+                            ? "🔒 premium requis"
+                            : r.error,
+                        );
+                      }
+                    }}
+                  >
+                    Rafraîchir via Stooq
+                  </button>
+                  {pfMsg && <span className="muted small">{pfMsg}</span>}
+                </div>
               </div>
             </>
           )}

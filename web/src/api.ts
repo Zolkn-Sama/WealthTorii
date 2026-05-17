@@ -239,6 +239,11 @@ export const api = {
       "DELETE",
       `/api/prices/${encodeURIComponent(symbol)}`,
     ),
+  refreshPrices: () =>
+    request<{
+      refreshed: Array<{ symbol: string; price: Money; as_of: string }>;
+      failed: Array<{ symbol: string; reason: string }>;
+    }>("POST", "/api/prices/refresh"),
   createPosition: (b: {
     symbol: string;
     quantity: string;
