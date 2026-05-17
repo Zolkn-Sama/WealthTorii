@@ -204,28 +204,32 @@ namespace wealthtorii::storage {
     }
 
     bool AccountRepository::ensure(const ledger::Account& account,
-                                   std::string_view user_id) {
+                                   std::string_view user_id,
+                                   std::int64_t opening_balance) {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(
-            "INSERT INTO accounts (id, name, currency, type, is_active, user_id) "
-            "VALUES ($1, $2, $3, $4, $5, $6) "
+            "INSERT INTO accounts "
+            "  (id, name, currency, type, is_active, user_id, opening_balance) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
             "ON CONFLICT (id) DO NOTHING",
             pqxx::params{account.id(), account.name(), currency_code(account.currency()),
                          account_type_code(account.type()), account.is_active(),
-                         std::string(user_id)});
+                         std::string(user_id), opening_balance});
         tx.commit();
         return r.affected_rows() > 0;
     }
 
     bool AccountRepository::update(const ledger::Account& account,
-                                   std::string_view user_id) {
+                                   std::string_view user_id,
+                                   std::int64_t opening_balance) {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(
-            "UPDATE accounts SET name = $2, currency = $3, type = $4, is_active = $5 "
+            "UPDATE accounts SET name = $2, currency = $3, type = $4, "
+            "  is_active = $5, opening_balance = $7 "
             "WHERE id = $1 AND user_id = $6",
             pqxx::params{account.id(), account.name(), currency_code(account.currency()),
                          account_type_code(account.type()), account.is_active(),
-                         std::string(user_id)});
+                         std::string(user_id), opening_balance});
         tx.commit();
         return r.affected_rows() > 0;
     }
@@ -285,6 +289,55 @@ namespace wealthtorii::storage {
             pqxx::params{std::string(account_id)});
         if (r.empty() || r.front()[0].is_null()) return std::nullopt;
         return r.front()[0].as<std::string>();
+    }
+
+    namespace {
+        // libpqxx yields row or row_ref depending on version — accept both.
+        template <class Row>
+        AccountBalance row_to_balance(const Row& row) {
+            AccountBalance b;
+            b.id = row[0].template as<std::string>();
+            b.name = row[1].template as<std::string>();
+            b.currency = row[2].template as<std::string>();
+            b.opening_balance = row[3].template as<std::int64_t>();
+            b.current_balance = row[4].template as<std::int64_t>();
+            return b;
+        }
+    } // namespace
+
+    std::vector<AccountBalance> AccountRepository::balances(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT a.id, a.name, a.currency, a.opening_balance, "
+            "       (a.opening_balance + COALESCE(SUM(t.minor_units), 0))::bigint "
+            "FROM accounts a "
+            "LEFT JOIN transactions t ON t.account_id = a.id "
+            "WHERE a.user_id = $1 "
+            "GROUP BY a.id, a.name, a.currency, a.opening_balance "
+            "ORDER BY a.id",
+            pqxx::params{std::string(user_id)});
+        std::vector<AccountBalance> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            out.push_back(row_to_balance(row));
+        }
+        return out;
+    }
+
+    std::optional<AccountBalance> AccountRepository::balance_of(
+        std::string_view user_id, std::string_view account_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT a.id, a.name, a.currency, a.opening_balance, "
+            "       (a.opening_balance + COALESCE(SUM(t.minor_units), 0))::bigint "
+            "FROM accounts a "
+            "LEFT JOIN transactions t ON t.account_id = a.id "
+            "WHERE a.user_id = $1 AND a.id = $2 "
+            "GROUP BY a.id, a.name, a.currency, a.opening_balance",
+            pqxx::params{std::string(user_id), std::string(account_id)});
+        if (r.empty()) return std::nullopt;
+        return row_to_balance(r.front());
     }
 
     bool AccountRepository::update(const ledger::Account& account) {

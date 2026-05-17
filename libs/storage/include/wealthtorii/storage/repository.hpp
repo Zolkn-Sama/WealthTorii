@@ -88,6 +88,17 @@ namespace wealthtorii::storage {
         std::size_t updated = 0;
     };
 
+    // An account with its opening balance and the derived current balance
+    // (opening_balance + sum of the account's transaction amounts), in minor
+    // units of `currency`.
+    struct AccountBalance {
+        std::string id;
+        std::string name;
+        std::string currency;
+        std::int64_t opening_balance = 0;
+        std::int64_t current_balance = 0;
+    };
+
     class AccountRepository {
     public:
         explicit AccountRepository(Connection& conn) noexcept : conn_(&conn) {}
@@ -109,8 +120,10 @@ namespace wealthtorii::storage {
         // --- user-scoped (multi-tenant) variants used by the API ---
         // Each binds the row to user_id; queries filter on it so one user never
         // sees another's accounts. The CLI keeps using the user-less overloads.
-        bool ensure(const ledger::Account& account, std::string_view user_id);
-        bool update(const ledger::Account& account, std::string_view user_id);
+        bool ensure(const ledger::Account& account, std::string_view user_id,
+                    std::int64_t opening_balance = 0);
+        bool update(const ledger::Account& account, std::string_view user_id,
+                    std::int64_t opening_balance = 0);
         bool remove(std::string_view id, std::string_view user_id);
         [[nodiscard]] std::optional<ledger::Account> find(std::string_view id,
                                                           std::string_view user_id) const;
@@ -120,6 +133,15 @@ namespace wealthtorii::storage {
         // Used to enforce transaction tenancy via the parent account.
         [[nodiscard]] std::optional<std::string> owner_of(
             std::string_view account_id) const;
+
+        // Per-account current balance for a user (opening_balance + sum of
+        // transaction amounts), ordered by account id.
+        [[nodiscard]] std::vector<AccountBalance> balances(
+            std::string_view user_id) const;
+
+        // Balance of one owned account; nullopt if absent / not the user's.
+        [[nodiscard]] std::optional<AccountBalance> balance_of(
+            std::string_view user_id, std::string_view account_id) const;
 
     private:
         Connection* conn_;
