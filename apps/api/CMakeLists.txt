@@ -8,6 +8,12 @@ add_executable(wt_api
 
 target_compile_features(wt_api PRIVATE cxx_std_20)
 
+# Built React front (web/dist) is served statically by the API when present.
+target_compile_definitions(wt_api
+        PRIVATE
+        WEALTHTORII_WEB_ROOT="${CMAKE_SOURCE_DIR}/web/dist"
+)
+
 # wealthtorii_cli_lib re-exports the budget/rules config helpers and, transitively,
 # every domain library the API needs (money, ledger, budget, import, analytics, storage).
 target_link_libraries(wt_api

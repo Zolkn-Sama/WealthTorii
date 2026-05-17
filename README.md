@@ -82,13 +82,22 @@ cmake --build build/dev
 docker compose -f infra/docker-compose.yml up -d
 export DATABASE_URL="postgresql://wealthtorii:wealthtorii@localhost:5544/wealthtorii"
 
-# API + Swagger UI
+# Interface web (React) — buildée puis servie par l'API
+npm --prefix web ci
+npm --prefix web run build          # génère web/dist (servi en statique)
+
+# API + UI web + Swagger UI
 DATABASE_URL="$DATABASE_URL" ./build/dev/apps/api/wt_api
-# → http://127.0.0.1:8080/swagger
+# → http://127.0.0.1:8080         (UI web si web/dist présent)
+# → http://127.0.0.1:8080/swagger (doc API)
 ```
 
 Tests : `ctest --preset test-dev` (les tests `storage` se sautent
 automatiquement si `DATABASE_URL` est absent).
+
+> Sans `web/dist`, `/` redirige vers `/swagger` — l'UI est optionnelle,
+> l'API reste pleinement fonctionnelle. Dev front : `npm --prefix web run dev`
+> (proxie `/api` vers `:8080`).
 
 ---
 
@@ -143,7 +152,8 @@ défini côté serveur.
 - **C++20**
 - **CMake** + **CMake Presets**
 - **vcpkg** pour la gestion des dépendances
-- **Drogon** pour la couche HTTP
+- **Drogon** pour la couche HTTP (sert aussi l'UI en statique)
+- **React + Vite + TypeScript** pour l'interface web (`web/`)
 - **libsodium** (Argon2id) + **jwt-cpp** pour l'auth
 - **libpqxx** + **PostgreSQL** pour la persistance
 - **GoogleTest** pour les tests

@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <filesystem>
 #include <iomanip>
 #include <map>
 #include <optional>
@@ -2366,11 +2367,29 @@ int main() {
 
     auto& app = drogon::app();
 
-    // ---- documentation -------------------------------------------------------
+    // ---- web UI + documentation ---------------------------------------------
+#ifndef WEALTHTORII_WEB_ROOT
+#define WEALTHTORII_WEB_ROOT ""
+#endif
+    const std::string web_root = WEALTHTORII_WEB_ROOT;
+    const bool has_web =
+        !web_root.empty() &&
+        std::filesystem::exists(web_root + "/index.html");
+    if (has_web) {
+        // Serve hashed assets (/assets/*) straight from the build output.
+        app.setDocumentRoot(web_root);
+    }
+    // "/" -> the React app when built, otherwise the Swagger UI.
     app.registerHandler(
         "/",
-        [](const HttpRequestPtr&, std::function<void(const HttpResponsePtr&)>&& cb) {
-            cb(HttpResponse::newRedirectionResponse("/swagger"));
+        [web_root, has_web](
+            const HttpRequestPtr&,
+            std::function<void(const HttpResponsePtr&)>&& cb) {
+            if (has_web) {
+                cb(HttpResponse::newFileResponse(web_root + "/index.html"));
+            } else {
+                cb(HttpResponse::newRedirectionResponse("/swagger"));
+            }
         },
         {Get});
     app.registerHandler(
