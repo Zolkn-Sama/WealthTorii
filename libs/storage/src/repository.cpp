@@ -550,4 +550,133 @@ namespace wealthtorii::storage {
         return out;
     }
 
+    bool SavingsGoalRepository::create(std::string_view user_id,
+                                       const SavingsGoal& goal) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "INSERT INTO savings_goals "
+            "  (id, user_id, name, currency, target_minor, target_date) "
+            "VALUES ($1, $2, $3, $4, $5, $6) "
+            "ON CONFLICT (id) DO NOTHING",
+            pqxx::params{goal.id, std::string(user_id), goal.name, goal.currency,
+                         goal.target_minor, goal.target_date});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool SavingsGoalRepository::update(std::string_view user_id,
+                                       const SavingsGoal& goal) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "UPDATE savings_goals SET name = $3, currency = $4, "
+            "  target_minor = $5, target_date = $6 "
+            "WHERE id = $1 AND user_id = $2",
+            pqxx::params{goal.id, std::string(user_id), goal.name, goal.currency,
+                         goal.target_minor, goal.target_date});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool SavingsGoalRepository::remove(std::string_view user_id,
+                                       std::string_view goal_id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "DELETE FROM savings_goals WHERE id = $1 AND user_id = $2",
+            pqxx::params{std::string(goal_id), std::string(user_id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    namespace {
+        template <class Row>
+        GoalProgress row_to_goal(const Row& row) {
+            GoalProgress gp;
+            gp.goal.id = row[0].template as<std::string>();
+            gp.goal.name = row[1].template as<std::string>();
+            gp.goal.currency = row[2].template as<std::string>();
+            gp.goal.target_minor = row[3].template as<std::int64_t>();
+            if (!row[4].is_null()) {
+                gp.goal.target_date = row[4].template as<std::string>();
+            }
+            gp.saved_minor = row[5].template as<std::int64_t>();
+            return gp;
+        }
+        constexpr const char* kGoalSelect =
+            "SELECT g.id, g.name, g.currency, g.target_minor, "
+            "       g.target_date::text, "
+            "       COALESCE(SUM(c.minor_units), 0)::bigint "
+            "FROM savings_goals g "
+            "LEFT JOIN savings_contributions c ON c.goal_id = g.id ";
+    } // namespace
+
+    std::vector<GoalProgress> SavingsGoalRepository::list(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            std::string(kGoalSelect) +
+                "WHERE g.user_id = $1 "
+                "GROUP BY g.id, g.name, g.currency, g.target_minor, g.target_date "
+                "ORDER BY g.created_at",
+            pqxx::params{std::string(user_id)});
+        std::vector<GoalProgress> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            out.push_back(row_to_goal(row));
+        }
+        return out;
+    }
+
+    std::optional<GoalProgress> SavingsGoalRepository::find(
+        std::string_view user_id, std::string_view goal_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            std::string(kGoalSelect) +
+                "WHERE g.user_id = $1 AND g.id = $2 "
+                "GROUP BY g.id, g.name, g.currency, g.target_minor, g.target_date",
+            pqxx::params{std::string(user_id), std::string(goal_id)});
+        if (r.empty()) return std::nullopt;
+        return row_to_goal(r.front());
+    }
+
+    bool SavingsGoalRepository::add_contribution(std::string_view user_id,
+                                                 std::string_view goal_id,
+                                                 const Contribution& c) {
+        pqxx::work tx(conn_->raw());
+        const auto owns = tx.exec(
+            "SELECT 1 FROM savings_goals WHERE id = $1 AND user_id = $2",
+            pqxx::params{std::string(goal_id), std::string(user_id)});
+        if (owns.empty()) {
+            return false;
+        }
+        tx.exec(
+            "INSERT INTO savings_contributions "
+            "  (id, goal_id, occurred_on, minor_units, note) "
+            "VALUES ($1, $2, $3, $4, $5)",
+            pqxx::params{c.id, std::string(goal_id), c.occurred_on,
+                         c.minor_units, c.note});
+        tx.commit();
+        return true;
+    }
+
+    std::vector<Contribution> SavingsGoalRepository::list_contributions(
+        std::string_view goal_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, occurred_on::text, minor_units, note "
+            "FROM savings_contributions WHERE goal_id = $1 "
+            "ORDER BY occurred_on, id",
+            pqxx::params{std::string(goal_id)});
+        std::vector<Contribution> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            Contribution c;
+            c.id = row[0].as<std::string>();
+            c.occurred_on = row[1].as<std::string>();
+            c.minor_units = row[2].as<std::int64_t>();
+            c.note = row[3].as<std::string>();
+            out.push_back(std::move(c));
+        }
+        return out;
+    }
+
 } // namespace wealthtorii::storage

@@ -307,6 +307,117 @@ namespace {
         }
     }
 
+
+    std::chrono::year_month_day today_ymd() {
+        const auto days =
+            std::chrono::floor<std::chrono::days>(std::chrono::system_clock::now());
+        return std::chrono::year_month_day{std::chrono::sys_days{days}};
+    }
+
+    // Whole months from `from` to `to` (>= 0). Day-of-month rounds down.
+    int months_until(std::chrono::year_month_day from,
+                     std::chrono::year_month_day to) {
+        int m = (static_cast<int>(to.year()) - static_cast<int>(from.year())) * 12 +
+                (static_cast<int>(static_cast<unsigned>(to.month())) -
+                 static_cast<int>(static_cast<unsigned>(from.month())));
+        if (static_cast<unsigned>(to.day()) < static_cast<unsigned>(from.day())) {
+            --m;
+        }
+        return m > 0 ? m : 0;
+    }
+
+    Json::Value goal_json(const storage::GoalProgress& gp) {
+        const auto cur = currency_or_eur(gp.goal.currency);
+        const auto target = gp.goal.target_minor;
+        const auto saved = gp.saved_minor;
+        const auto remaining = saved >= target ? std::int64_t{0} : target - saved;
+
+        Json::Value v(Json::objectValue);
+        v["id"] = gp.goal.id;
+        v["name"] = gp.goal.name;
+        v["currency"] = gp.goal.currency;
+        v["target"] = api::money_json(money::Money(target, cur));
+        v["saved"] = api::money_json(money::Money(saved, cur));
+        v["remaining"] = api::money_json(money::Money(remaining, cur));
+        v["progress_pct"] =
+            target > 0 ? 100.0 * static_cast<double>(saved) /
+                             static_cast<double>(target)
+                       : 0.0;
+        v["reached"] = saved >= target;
+        if (gp.goal.target_date.has_value()) {
+            v["target_date"] = *gp.goal.target_date;
+            const auto td = parse_iso_date(*gp.goal.target_date);
+            if (td.has_value()) {
+                const int ml = months_until(today_ymd(), *td);
+                v["months_left"] = ml;
+                const std::int64_t req =
+                    (remaining > 0 && ml > 0)
+                        ? (remaining + ml - 1) / ml  // ceil
+                        : remaining;
+                v["required_monthly"] =
+                    api::money_json(money::Money(req, cur));
+            }
+        } else {
+            v["target_date"] = Json::Value(Json::nullValue);
+        }
+        return v;
+    }
+
+    Json::Value contribution_json(const storage::Contribution& c,
+                                  money::Currency cur) {
+        Json::Value v(Json::objectValue);
+        v["id"] = c.id;
+        v["date"] = c.occurred_on;
+        v["amount"] = api::money_json(money::Money(c.minor_units, cur));
+        v["note"] = c.note;
+        return v;
+    }
+
+    // Builds a SavingsGoal from JSON. id is supplied by the caller (generated
+    // on create, path param on update). Returns err on validation failure.
+    std::optional<storage::SavingsGoal> goal_from_json(const Json::Value& b,
+                                                       std::string id,
+                                                       std::string& err) {
+        if (!b.isMember("name") || !b.isMember("target")) {
+            err = "'name' and 'target' are required";
+            return std::nullopt;
+        }
+        storage::SavingsGoal g;
+        g.id = std::move(id);
+        g.name = b["name"].asString();
+        auto cur = money::Currency::EUR;
+        if (b.isMember("currency")) {
+            const auto c = money::currency_from_string(b["currency"].asString());
+            if (!c.has_value()) {
+                err = "unknown currency";
+                return std::nullopt;
+            }
+            cur = *c;
+        }
+        g.currency = std::string(money::to_string(cur));
+        const auto& t = b["target"];
+        std::optional<money::Money> target;
+        if (t.isString()) {
+            target = money::Money::from_string(t.asString(), cur);
+        } else {
+            target = money::Money(t.asInt64(), cur);
+        }
+        if (!target.has_value() || target->is_negative() || target->is_zero()) {
+            err = "'target' must be a strictly positive amount";
+            return std::nullopt;
+        }
+        g.target_minor = target->minor_units();
+        if (b.isMember("target_date") && !b["target_date"].isNull()) {
+            const auto d = b["target_date"].asString();
+            if (!parse_iso_date(d).has_value()) {
+                err = "'target_date' must be YYYY-MM-DD";
+                return std::nullopt;
+            }
+            g.target_date = d;
+        }
+        return g;
+    }
+
     // Mirrors apps/cli compute_report + rendering, emitting JSON instead of text.
     Json::Value build_report_json(const ledger::Journal& journal,
                                   std::string_view account,
@@ -1020,10 +1131,10 @@ namespace {
     // Premium (paid) surface. Everything else under /api/ is free but still
     // requires a valid token. Prefix match covers /{id} path params.
     bool is_premium_path(const std::string& p) {
-        static const std::array<std::string_view, 8> prefixes{
+        static const std::array<std::string_view, 9> prefixes{
             "/api/report",   "/api/suggest",      "/api/export",
             "/api/sync",     "/api/accounts",     "/api/transactions",
-            "/api/networth", "/api/trends"};
+            "/api/networth", "/api/trends",       "/api/goals"};
         for (const auto pre : prefixes) {
             if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
                 return true;
@@ -1736,6 +1847,202 @@ namespace {
         }
     }
 
+    // ---- savings goals ------------------------------------------------------
+
+    void h_goals_get_all(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::SavingsGoalRepository repo{*db};
+            Json::Value arr(Json::arrayValue);
+            for (const auto& gp : repo.list(uid_of(req))) {
+                arr.append(goal_json(gp));
+            }
+            Json::Value out(Json::objectValue);
+            out["goals"] = arr;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goals_get_one(const HttpRequestPtr& req, Callback&& cb,
+                         std::string id) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::SavingsGoalRepository repo{*db};
+            const auto gp = repo.find(uid_of(req), id);
+            if (!gp.has_value()) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            send_json(cb, goal_json(*gp));
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goals_post(const HttpRequestPtr& req, Callback&& cb) {
+        const auto body = req->getJsonObject();
+        if (!body) {
+            return send_error(cb, "JSON body is required");
+        }
+        std::string err;
+        const auto goal = goal_from_json(*body, api::auth::new_id(), err);
+        if (!goal.has_value()) {
+            return send_error(cb, err);
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::SavingsGoalRepository repo{*db};
+            if (!repo.create(uid_of(req), *goal)) {
+                return send_error(cb, "could not create goal",
+                                  drogon::k500InternalServerError);
+            }
+            const auto gp = repo.find(uid_of(req), goal->id);
+            send_json(cb, gp.has_value() ? goal_json(*gp) : Json::Value(),
+                      drogon::k201Created);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goals_put(const HttpRequestPtr& req, Callback&& cb, std::string id) {
+        const auto body = req->getJsonObject();
+        if (!body) {
+            return send_error(cb, "JSON body is required");
+        }
+        std::string err;
+        const auto goal = goal_from_json(*body, id, err);
+        if (!goal.has_value()) {
+            return send_error(cb, err);
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::SavingsGoalRepository repo{*db};
+            if (!repo.update(uid_of(req), *goal)) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            const auto gp = repo.find(uid_of(req), id);
+            send_json(cb, gp.has_value() ? goal_json(*gp) : Json::Value());
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goals_delete(const HttpRequestPtr& req, Callback&& cb,
+                        std::string id) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::SavingsGoalRepository repo{*db};
+            if (!repo.remove(uid_of(req), id)) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            Json::Value out(Json::objectValue);
+            out["deleted"] = id;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goal_contrib_post(const HttpRequestPtr& req, Callback&& cb,
+                             std::string id) {
+        const auto body = req->getJsonObject();
+        if (!body || !body->isMember("amount")) {
+            return send_error(cb, "JSON body with 'amount' is required");
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::SavingsGoalRepository repo{*db};
+            const auto gp = repo.find(uid_of(req), id);
+            if (!gp.has_value()) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            const auto cur = currency_or_eur(gp->goal.currency);
+            const auto& a = (*body)["amount"];
+            std::optional<money::Money> amount;
+            if (a.isString()) {
+                amount = money::Money::from_string(a.asString(), cur);
+            } else {
+                amount = money::Money(a.asInt64(), cur);
+            }
+            if (!amount.has_value() || amount->is_zero()) {
+                return send_error(cb, "'amount' must be a non-zero amount "
+                                      "(negative = withdrawal)");
+            }
+            storage::Contribution c;
+            c.id = api::auth::new_id();
+            if (body->isMember("date") && !(*body)["date"].isNull()) {
+                const auto d = (*body)["date"].asString();
+                if (!parse_iso_date(d).has_value()) {
+                    return send_error(cb, "'date' must be YYYY-MM-DD");
+                }
+                c.occurred_on = d;
+            } else {
+                c.occurred_on = format_iso_date(today_ymd());
+            }
+            c.minor_units = amount->minor_units();
+            c.note = body->isMember("note") ? (*body)["note"].asString() : "";
+            if (!repo.add_contribution(uid_of(req), id, c)) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            const auto updated = repo.find(uid_of(req), id);
+            send_json(cb, updated.has_value() ? goal_json(*updated) : Json::Value(),
+                      drogon::k201Created);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_goal_contrib_get(const HttpRequestPtr& req, Callback&& cb,
+                            std::string id) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::SavingsGoalRepository repo{*db};
+            const auto gp = repo.find(uid_of(req), id);
+            if (!gp.has_value()) {
+                return send_error(cb, "goal '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            const auto cur = currency_or_eur(gp->goal.currency);
+            Json::Value arr(Json::arrayValue);
+            for (const auto& c : repo.list_contributions(id)) {
+                arr.append(contribution_json(c, cur));
+            }
+            Json::Value out(Json::objectValue);
+            out["goal"] = id;
+            out["contributions"] = arr;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -1800,6 +2107,17 @@ int main() {
     // ---- net worth & trends --------------------------------------------------
     app.registerHandler("/api/networth", &h_networth, {Get});
     app.registerHandler("/api/trends", &h_trends, {Get});
+
+    // ---- savings goals -------------------------------------------------------
+    app.registerHandler("/api/goals", &h_goals_get_all, {Get});
+    app.registerHandler("/api/goals", &h_goals_post, {Post});
+    app.registerHandler("/api/goals/{id}", &h_goals_get_one, {Get});
+    app.registerHandler("/api/goals/{id}", &h_goals_put, {Put});
+    app.registerHandler("/api/goals/{id}", &h_goals_delete, {Delete});
+    app.registerHandler("/api/goals/{id}/contributions", &h_goal_contrib_post,
+                        {Post});
+    app.registerHandler("/api/goals/{id}/contributions", &h_goal_contrib_get,
+                        {Get});
 
     // ---- CRUD: transactions --------------------------------------------------
     app.registerHandler("/api/transactions", &h_tx_get_all, {Get});

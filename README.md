@@ -107,6 +107,7 @@ automatiquement si `DATABASE_URL` est absent).
 | Comptes | `GET/POST /api/accounts`, `GET/PUT/DELETE /api/accounts/{id}`, `GET /api/accounts/{id}/balance` |
 | Transactions | `GET/POST /api/transactions`, `GET/PUT/DELETE /api/transactions/{id}` |
 | Patrimoine | `GET /api/networth` (soldes + totaux par devise) |
+| Objectifs | `GET/POST /api/goals`, `GET/PUT/DELETE /api/goals/{id}`, `GET/POST /api/goals/{id}/contributions` |
 | Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
 | Analytics | `GET/POST /api/suggest`, `GET /api/trends` (mensuel + taux d'épargne) |
 | Export | `GET/POST /api/export` (CSV format SORTED_DATA) |
@@ -121,7 +122,7 @@ transactions, **budgets et règles** sont **cloisonnés par utilisateur**
 | Tier | Fonctionnalités |
 |---|---|
 | **Gratuit** | `allocate`, `categories`, `budget`, `rules`, `import` |
-| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends` |
+| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends`, `goals` |
 
 Un utilisateur `free` qui appelle un endpoint premium reçoit `402 Payment
 Required`. Le mot de passe est haché en **Argon2id** (libsodium) ; le JWT est

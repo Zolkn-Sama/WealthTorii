@@ -183,4 +183,51 @@ namespace wealthtorii::storage {
         Connection* conn_;
     };
 
+    // A savings goal ("projet saving"). target_date is optional (ISO yyyy-mm-dd
+    // string when set). currency is an ISO code.
+    struct SavingsGoal {
+        std::string id;
+        std::string name;
+        std::string currency = "EUR";
+        std::int64_t target_minor = 0;
+        std::optional<std::string> target_date;
+    };
+
+    // A goal plus the derived saved amount (sum of its contributions).
+    struct GoalProgress {
+        SavingsGoal goal;
+        std::int64_t saved_minor = 0;
+    };
+
+    struct Contribution {
+        std::string id;
+        std::string occurred_on; // ISO yyyy-mm-dd
+        std::int64_t minor_units = 0; // + deposit, - withdrawal
+        std::string note;
+    };
+
+    class SavingsGoalRepository {
+    public:
+        explicit SavingsGoalRepository(Connection& conn) noexcept : conn_(&conn) {}
+
+        bool create(std::string_view user_id, const SavingsGoal& goal);
+        bool update(std::string_view user_id, const SavingsGoal& goal);
+        bool remove(std::string_view user_id, std::string_view goal_id);
+
+        [[nodiscard]] std::vector<GoalProgress> list(
+            std::string_view user_id) const;
+        [[nodiscard]] std::optional<GoalProgress> find(
+            std::string_view user_id, std::string_view goal_id) const;
+
+        // Records a contribution on a goal the caller owns. Returns false if
+        // the goal doesn't exist for that user.
+        bool add_contribution(std::string_view user_id, std::string_view goal_id,
+                              const Contribution& c);
+        [[nodiscard]] std::vector<Contribution> list_contributions(
+            std::string_view goal_id) const;
+
+    private:
+        Connection* conn_;
+    };
+
 } // namespace wealthtorii::storage
