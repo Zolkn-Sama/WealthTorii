@@ -162,6 +162,22 @@ namespace {
         return v;
     }
 
+    money::Currency currency_or_eur(const std::string& code) {
+        return money::currency_from_string(code).value_or(money::Currency::EUR);
+    }
+
+    // Account view enriched with opening balance and derived current balance.
+    Json::Value balance_json(const storage::AccountBalance& b) {
+        const auto cur = currency_or_eur(b.currency);
+        Json::Value v(Json::objectValue);
+        v["id"] = b.id;
+        v["name"] = b.name;
+        v["currency"] = b.currency;
+        v["opening_balance"] = api::money_json(money::Money(b.opening_balance, cur));
+        v["balance"] = api::money_json(money::Money(b.current_balance, cur));
+        return v;
+    }
+
     Json::Value transaction_json(const ledger::Transaction& t) {
         Json::Value v(Json::objectValue);
         v["id"] = t.id();
@@ -208,6 +224,26 @@ namespace {
         }
         const bool active = !b.isMember("is_active") || b["is_active"].asBool();
         return ledger::Account(std::move(id), b["name"].asString(), currency, type, active);
+    }
+
+    // Parses an optional "opening_balance": a signed amount string ("1 200,50")
+    // or integer minor units. Defaults to 0. nullopt + err on a bad string.
+    std::optional<std::int64_t> opening_balance_from_json(const Json::Value& b,
+                                                          money::Currency currency,
+                                                          std::string& err) {
+        if (!b.isMember("opening_balance") || b["opening_balance"].isNull()) {
+            return 0;
+        }
+        const auto& ob = b["opening_balance"];
+        if (ob.isString()) {
+            const auto m = money::Money::from_string(ob.asString(), currency);
+            if (!m.has_value()) {
+                err = "'opening_balance' is not a valid amount";
+                return std::nullopt;
+            }
+            return m->minor_units();
+        }
+        return ob.asInt64();
     }
 
     // Builds a Transaction from a JSON body. Accepts either {amount:"-12,34 EUR"} or
@@ -984,9 +1020,10 @@ namespace {
     // Premium (paid) surface. Everything else under /api/ is free but still
     // requires a valid token. Prefix match covers /{id} path params.
     bool is_premium_path(const std::string& p) {
-        static const std::array<std::string_view, 6> prefixes{
-            "/api/report", "/api/suggest", "/api/export",
-            "/api/sync",   "/api/accounts", "/api/transactions"};
+        static const std::array<std::string_view, 8> prefixes{
+            "/api/report",   "/api/suggest",      "/api/export",
+            "/api/sync",     "/api/accounts",     "/api/transactions",
+            "/api/networth", "/api/trends"};
         for (const auto pre : prefixes) {
             if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
                 return true;
@@ -1134,8 +1171,8 @@ namespace {
         try {
             const storage::AccountRepository repo{*db};
             Json::Value arr(Json::arrayValue);
-            for (const auto& a : repo.all(uid_of(req))) {
-                arr.append(account_json(a));
+            for (const auto& b : repo.balances(uid_of(req))) {
+                arr.append(balance_json(b));
             }
             Json::Value out(Json::objectValue);
             out["accounts"] = arr;
@@ -1153,15 +1190,20 @@ namespace {
         }
         try {
             const storage::AccountRepository repo{*db};
-            const auto a = repo.find(id, uid_of(req));
-            if (!a.has_value()) {
+            const auto b = repo.balance_of(uid_of(req), id);
+            if (!b.has_value()) {
                 return send_error(cb, "account '" + id + "' not found",
                                   drogon::k404NotFound);
             }
-            send_json(cb, account_json(*a));
+            send_json(cb, balance_json(*b));
         } catch (const std::exception& e) {
             send_error(cb, e.what(), drogon::k500InternalServerError);
         }
+    }
+
+    void h_account_balance(const HttpRequestPtr& req, Callback&& cb,
+                           std::string id) {
+        h_accounts_get_one(req, std::move(cb), std::move(id));
     }
 
     void h_accounts_post(const HttpRequestPtr& req, Callback&& cb) {
@@ -1176,17 +1218,23 @@ namespace {
         if (!account.has_value()) {
             return send_error(cb, err);
         }
+        const auto opening = opening_balance_from_json(*body, account->currency(), err);
+        if (!opening.has_value()) {
+            return send_error(cb, err);
+        }
         auto db = open_db(cb);
         if (!db) {
             return;
         }
         try {
             storage::AccountRepository repo{*db};
-            if (!repo.ensure(*account, uid_of(req))) {
+            if (!repo.ensure(*account, uid_of(req), *opening)) {
                 return send_error(cb, "account '" + id + "' already exists",
                                   drogon::k409Conflict);
             }
-            send_json(cb, account_json(*account), drogon::k201Created);
+            const auto b = repo.balance_of(uid_of(req), id);
+            send_json(cb, b.has_value() ? balance_json(*b) : account_json(*account),
+                      drogon::k201Created);
         } catch (const std::exception& e) {
             send_error(cb, e.what(), drogon::k500InternalServerError);
         }
@@ -1202,17 +1250,22 @@ namespace {
         if (!account.has_value()) {
             return send_error(cb, err);
         }
+        const auto opening = opening_balance_from_json(*body, account->currency(), err);
+        if (!opening.has_value()) {
+            return send_error(cb, err);
+        }
         auto db = open_db(cb);
         if (!db) {
             return;
         }
         try {
             storage::AccountRepository repo{*db};
-            if (!repo.update(*account, uid_of(req))) {
+            if (!repo.update(*account, uid_of(req), *opening)) {
                 return send_error(cb, "account '" + id + "' not found",
                                   drogon::k404NotFound);
             }
-            send_json(cb, account_json(*account));
+            const auto b = repo.balance_of(uid_of(req), id);
+            send_json(cb, b.has_value() ? balance_json(*b) : account_json(*account));
         } catch (const std::exception& e) {
             send_error(cb, e.what(), drogon::k500InternalServerError);
         }
@@ -1581,6 +1634,108 @@ namespace {
         }
     }
 
+    // ---- net worth & trends -------------------------------------------------
+
+    void h_networth(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::AccountRepository repo{*db};
+            const auto rows = repo.balances(uid_of(req));
+            // Net worth doesn't FX-convert: total per currency.
+            std::map<std::string, std::pair<std::int64_t, std::int64_t>> by_ccy;
+            Json::Value accounts(Json::arrayValue);
+            for (const auto& b : rows) {
+                accounts.append(balance_json(b));
+                auto& [open, bal] = by_ccy[b.currency];
+                open += b.opening_balance;
+                bal += b.current_balance;
+            }
+            Json::Value totals(Json::arrayValue);
+            for (const auto& [ccy, sums] : by_ccy) {
+                const auto cur = currency_or_eur(ccy);
+                Json::Value t(Json::objectValue);
+                t["currency"] = ccy;
+                t["opening_balance"] =
+                    api::money_json(money::Money(sums.first, cur));
+                t["net_worth"] = api::money_json(money::Money(sums.second, cur));
+                totals.append(t);
+            }
+            Json::Value out(Json::objectValue);
+            out["accounts"] = accounts;
+            out["totals"] = totals;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_trends(const HttpRequestPtr& req, Callback&& cb) {
+        const auto account = req->getParameter("account");
+        if (account.empty()) {
+            return send_error(cb, "query parameter 'account' is required");
+        }
+        std::optional<int> last_n;
+        if (auto m = req->getParameter("months"); !m.empty()) {
+            try {
+                const int v = std::stoi(m);
+                if (v <= 0) {
+                    return send_error(cb, "'months' must be a positive integer");
+                }
+                last_n = v;
+            } catch (...) {
+                return send_error(cb, "'months' must be a positive integer");
+            }
+        }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
+        std::string err;
+        auto journal = journal_from_db(account, err);
+        if (!journal.has_value()) {
+            return send_error(cb, err, drogon::k500InternalServerError);
+        }
+        try {
+            auto db = open_db(cb);
+            if (!db) {
+                return;
+            }
+            const storage::AccountRepository repo{*db};
+            const auto bal = repo.balance_of(uid_of(req), account);
+            const auto currency =
+                bal.has_value() ? currency_or_eur(bal->currency)
+                                : money::Currency::EUR;
+            auto series = analytics::monthly_totals(*journal, currency);
+            if (last_n.has_value() &&
+                series.size() > static_cast<std::size_t>(*last_n)) {
+                series.erase(series.begin(),
+                             series.end() - *last_n);
+            }
+            Json::Value months(Json::arrayValue);
+            for (const auto& mt : series) {
+                Json::Value row(Json::objectValue);
+                row["month"] = api::format_year_month(mt.month);
+                row["inflow"] = api::money_json(mt.inflow);
+                row["outflow"] = api::money_json(mt.outflow);
+                row["net"] = api::money_json(mt.net);
+                const auto in = mt.inflow.minor_units();
+                row["savings_rate_pct"] =
+                    in > 0 ? 100.0 * static_cast<double>(mt.net.minor_units()) /
+                                 static_cast<double>(in)
+                           : 0.0;
+                months.append(row);
+            }
+            Json::Value out(Json::objectValue);
+            out["account"] = account;
+            out["months"] = months;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -1640,6 +1795,11 @@ int main() {
     app.registerHandler("/api/accounts/{id}", &h_accounts_get_one, {Get});
     app.registerHandler("/api/accounts/{id}", &h_accounts_put, {Put});
     app.registerHandler("/api/accounts/{id}", &h_accounts_delete, {Delete});
+    app.registerHandler("/api/accounts/{id}/balance", &h_account_balance, {Get});
+
+    // ---- net worth & trends --------------------------------------------------
+    app.registerHandler("/api/networth", &h_networth, {Get});
+    app.registerHandler("/api/trends", &h_trends, {Get});
 
     // ---- CRUD: transactions --------------------------------------------------
     app.registerHandler("/api/transactions", &h_tx_get_all, {Get});

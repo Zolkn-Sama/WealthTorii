@@ -310,6 +310,46 @@ namespace wealthtorii::api {
         }
       }
     },
+    "/api/accounts/{id}/balance": {
+      "get": {
+        "tags": ["accounts"],
+        "summary": "Solde d'un compte (ouverture + somme des transactions)",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Solde", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Account" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/networth": {
+      "get": {
+        "tags": ["accounts"],
+        "summary": "Patrimoine net : solde par compte + totaux par devise",
+        "responses": {
+          "200": { "description": "Patrimoine net", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/trends": {
+      "get": {
+        "tags": ["analytics"],
+        "summary": "Tendances mensuelles d'un compte (inflow/outflow/net + taux d'epargne)",
+        "parameters": [
+          { "name": "account", "in": "query", "required": true, "schema": { "type": "string" }, "example": "bp-main" },
+          { "name": "months", "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Limiter aux N derniers mois" }
+        ],
+        "responses": {
+          "200": { "description": "Serie mensuelle", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/transactions": {
       "get": {
         "tags": ["transactions"],
@@ -511,12 +551,13 @@ namespace wealthtorii::api {
       },
       "Account": {
         "type": "object",
+        "description": "Compte avec son solde d'ouverture et son solde courant derive (opening_balance + somme des transactions).",
         "properties": {
           "id": { "type": "string" },
           "name": { "type": "string" },
           "currency": { "type": "string", "enum": ["EUR","USD","CHF"] },
-          "type": { "type": "string", "enum": ["CASH","BROKERAGE","CRYPTO","SAVINGS","EXTERNAL"] },
-          "is_active": { "type": "boolean" }
+          "opening_balance": { "$ref": "#/components/schemas/Money" },
+          "balance": { "$ref": "#/components/schemas/Money" }
         }
       },
       "AccountInput": {
@@ -527,7 +568,8 @@ namespace wealthtorii::api {
           "name": { "type": "string", "example": "Compte courant BP" },
           "currency": { "type": "string", "enum": ["EUR","USD","CHF"], "default": "EUR" },
           "type": { "type": "string", "enum": ["CASH","BROKERAGE","CRYPTO","SAVINGS","EXTERNAL"], "default": "CASH" },
-          "is_active": { "type": "boolean", "default": true }
+          "is_active": { "type": "boolean", "default": true },
+          "opening_balance": { "type": "string", "example": "1500,00", "description": "Montant signe (FR/EN) ou entier en unites mineures. Defaut 0." }
         }
       },
       "Transaction": {
