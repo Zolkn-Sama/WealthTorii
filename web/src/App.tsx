@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { api, tokenStore, type ApiResult } from "./api";
+import { TrendsChart } from "./TrendsChart";
 
 export function App() {
   const [token, setToken] = useState<string | null>(tokenStore.get());
@@ -438,26 +439,40 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
             d.months.length === 0 ? (
               <p className="muted">Pas de données.</p>
             ) : (
-              <table>
-                <thead>
-                  <tr>
-                    <th>Mois</th>
-                    <th className="num">Entrées</th>
-                    <th className="num">Sorties</th>
-                    <th className="num">Épargne</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {d.months.map((m) => (
-                    <tr key={m.month}>
-                      <td>{m.month}</td>
-                      <td className="num">{m.inflow.display}</td>
-                      <td className="num">{m.outflow.display}</td>
-                      <td className="num">{m.savings_rate_pct.toFixed(0)}%</td>
+              <>
+                <div className="legend">
+                  <span>
+                    <i className="sw-in" /> entrées
+                  </span>
+                  <span>
+                    <i className="sw-out" /> sorties
+                  </span>
+                  <span className="muted">% = taux d'épargne</span>
+                </div>
+                <TrendsChart months={d.months} />
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Mois</th>
+                      <th className="num">Entrées</th>
+                      <th className="num">Sorties</th>
+                      <th className="num">Épargne</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {d.months.map((m) => (
+                      <tr key={m.month}>
+                        <td>{m.month}</td>
+                        <td className="num">{m.inflow.display}</td>
+                        <td className="num">{m.outflow.display}</td>
+                        <td className="num">
+                          {m.savings_rate_pct.toFixed(0)}%
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
             )
           }
         </Section>
