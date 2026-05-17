@@ -48,7 +48,8 @@ Postgres, une CLI complète et une API HTTP documentée par Swagger sont en plac
 - `budget` — catégories, règle 50/30/20, comparaison budget/dépenses
 - `import` — parsing CSV Banque Populaire + catégorisation par règles regex
 - `storage` — persistance Postgres via `libpqxx` (migrations idempotentes)
-- `analytics` — totaux mensuels, suggestions de budget
+- `analytics` — totaux mensuels, suggestions de budget, détection des récurrents
+- `portfolio` — valorisation de positions (coût moyen), +/-value latente
 
 **Applications**
 - `apps/cli` — binaire `wt` : `allocate`, `categories`, `import`, `report`,
@@ -58,8 +59,7 @@ Postgres, une CLI complète et une API HTTP documentée par Swagger sont en plac
   comptes et transactions (OpenAPI 3.0)
 
 **Modules prévus**
-- `portfolio` — positions et performance
-- `market_data` — données de marché
+- `market_data` — flux de prix externe (les prix sont saisis manuellement pour l'instant)
 
 ---
 
@@ -115,8 +115,9 @@ automatiquement si `DATABASE_URL` est absent).
 | Règles | `GET/POST/PUT/DELETE /api/rules` |
 | Comptes | `GET/POST /api/accounts`, `GET/PUT/DELETE /api/accounts/{id}`, `GET /api/accounts/{id}/balance` |
 | Transactions | `GET/POST /api/transactions`, `GET/PUT/DELETE /api/transactions/{id}` |
-| Patrimoine | `GET /api/networth` (soldes + totaux par devise) |
+| Patrimoine | `GET /api/networth` (soldes + investissements + totaux par devise) |
 | Objectifs | `GET/POST /api/goals`, `GET/PUT/DELETE /api/goals/{id}`, `GET/POST /api/goals/{id}/contributions` |
+| Investissements | `GET /api/portfolio`, `GET/POST /api/positions`, `PUT/DELETE /api/positions/{id}`, `GET /api/prices`, `PUT/DELETE /api/prices/{symbol}` |
 | Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
 | Analytics | `GET/POST /api/suggest`, `GET /api/trends` (mensuel + taux d'épargne), `GET /api/recurring` (récurrents détectés), `GET /api/forecast` (solde projeté), `GET /api/plan` (allocation perso + reste à vivre) |
 | Export | `GET/POST /api/export` (CSV format SORTED_DATA) |
@@ -131,7 +132,7 @@ transactions, **budgets et règles** sont **cloisonnés par utilisateur**
 | Tier | Fonctionnalités |
 |---|---|
 | **Gratuit** | `allocate`, `categories`, `budget`, `rules`, `import` |
-| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends`, `goals`, `recurring`, `forecast`, `plan` |
+| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends`, `goals`, `recurring`, `forecast`, `plan`, `positions`, `prices`, `portfolio` |
 
 Un utilisateur `free` qui appelle un endpoint premium reçoit `402 Payment
 Required`. Le mot de passe est haché en **Argon2id** (libsodium) ; le JWT est

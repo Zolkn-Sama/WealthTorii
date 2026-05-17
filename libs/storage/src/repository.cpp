@@ -680,4 +680,120 @@ namespace wealthtorii::storage {
         return out;
     }
 
+    void InstrumentPriceRepository::upsert(std::string_view user_id,
+                                           const StoredPrice& p) {
+        pqxx::work tx(conn_->raw());
+        tx.exec(
+            "INSERT INTO instrument_prices "
+            "  (user_id, symbol, currency, price_minor, as_of) "
+            "VALUES ($1, $2, $3, $4, $5) "
+            "ON CONFLICT (user_id, symbol) DO UPDATE SET "
+            "  currency = EXCLUDED.currency, "
+            "  price_minor = EXCLUDED.price_minor, "
+            "  as_of = EXCLUDED.as_of",
+            pqxx::params{std::string(user_id), p.symbol, p.currency,
+                         p.price_minor, p.as_of});
+        tx.commit();
+    }
+
+    std::vector<StoredPrice> InstrumentPriceRepository::list(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT symbol, currency, price_minor, as_of::text "
+            "FROM instrument_prices WHERE user_id = $1 ORDER BY symbol",
+            pqxx::params{std::string(user_id)});
+        std::vector<StoredPrice> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            StoredPrice p;
+            p.symbol = row[0].as<std::string>();
+            p.currency = row[1].as<std::string>();
+            p.price_minor = row[2].as<std::int64_t>();
+            p.as_of = row[3].as<std::string>();
+            out.push_back(std::move(p));
+        }
+        return out;
+    }
+
+    bool InstrumentPriceRepository::remove(std::string_view user_id,
+                                           std::string_view symbol) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "DELETE FROM instrument_prices WHERE user_id = $1 AND symbol = $2",
+            pqxx::params{std::string(user_id), std::string(symbol)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    namespace {
+        std::optional<std::string> opt_str(std::string s) {
+            if (s.empty()) return std::nullopt;
+            return s;
+        }
+    } // namespace
+
+    bool PositionRepository::create(std::string_view user_id,
+                                    const StoredPosition& p) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "INSERT INTO positions "
+            "  (id, user_id, account_id, symbol, quantity_micro, cost_minor, "
+            "   currency) "
+            "VALUES ($1, $2, $3, $4, $5, $6, $7) "
+            "ON CONFLICT (id) DO NOTHING",
+            pqxx::params{p.id, std::string(user_id), opt_str(p.account_id),
+                         p.symbol, p.quantity_micro, p.cost_minor,
+                         p.currency});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool PositionRepository::update(std::string_view user_id,
+                                    const StoredPosition& p) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "UPDATE positions SET account_id = $3, symbol = $4, "
+            "  quantity_micro = $5, cost_minor = $6, currency = $7 "
+            "WHERE id = $1 AND user_id = $2",
+            pqxx::params{p.id, std::string(user_id), opt_str(p.account_id),
+                         p.symbol, p.quantity_micro, p.cost_minor,
+                         p.currency});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    bool PositionRepository::remove(std::string_view user_id,
+                                    std::string_view id) {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "DELETE FROM positions WHERE id = $1 AND user_id = $2",
+            pqxx::params{std::string(id), std::string(user_id)});
+        tx.commit();
+        return r.affected_rows() > 0;
+    }
+
+    std::vector<StoredPosition> PositionRepository::list(
+        std::string_view user_id) const {
+        pqxx::work tx(conn_->raw());
+        const auto r = tx.exec(
+            "SELECT id, account_id, symbol, quantity_micro, cost_minor, "
+            "       currency "
+            "FROM positions WHERE user_id = $1 ORDER BY symbol, id",
+            pqxx::params{std::string(user_id)});
+        std::vector<StoredPosition> out;
+        out.reserve(static_cast<std::size_t>(r.size()));
+        for (const auto& row : r) {
+            StoredPosition p;
+            p.id = row[0].as<std::string>();
+            if (!row[1].is_null()) p.account_id = row[1].as<std::string>();
+            p.symbol = row[2].as<std::string>();
+            p.quantity_micro = row[3].as<std::int64_t>();
+            p.cost_minor = row[4].as<std::int64_t>();
+            p.currency = row[5].as<std::string>();
+            out.push_back(std::move(p));
+        }
+        return out;
+    }
+
 } // namespace wealthtorii::storage

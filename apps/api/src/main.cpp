@@ -6,6 +6,7 @@
 #include "rules_config.hpp"
 
 #include <wealthtorii/analytics/analytics.hpp>
+#include <wealthtorii/portfolio/portfolio.hpp>
 #include <wealthtorii/budget/allocation.hpp>
 #include <wealthtorii/budget/budget.hpp>
 #include <wealthtorii/budget/category.hpp>
@@ -23,9 +24,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -70,6 +73,12 @@ namespace {
                        const cli::RulesConfig& cfg);
     std::optional<import_::Categorizer> db_make_categorizer(
         const HttpRequestPtr& req, const Callback& cb);
+
+    // Investments helpers — used by /api/networth before their definition.
+    std::map<std::string, portfolio::Price> price_map(
+        const std::vector<storage::StoredPrice>& rows);
+    std::vector<portfolio::Position> to_positions(
+        const std::vector<storage::StoredPosition>& rows);
 
     ledger::Journal journal_from_csv(std::istream& in, std::string account,
                                      money::Currency currency,
@@ -178,6 +187,64 @@ namespace {
         v["opening_balance"] = api::money_json(money::Money(b.opening_balance, cur));
         v["balance"] = api::money_json(money::Money(b.current_balance, cur));
         return v;
+    }
+
+    // ---- investments helpers ------------------------------------------------
+
+    // "10", "0.5", "1 234,56" -> quantity * 1e6. nullopt on garbage.
+    std::optional<std::int64_t> parse_qty_micro(std::string s) {
+        std::string t;
+        for (char c : s) {
+            if (c == ',') {
+                t.push_back('.');
+            } else if (c != ' ') {
+                t.push_back(c);
+            }
+        }
+        if (t.empty()) {
+            return std::nullopt;
+        }
+        try {
+            size_t used = 0;
+            const double d = std::stod(t, &used);
+            if (used != t.size() || d < 0) {
+                return std::nullopt;
+            }
+            return static_cast<std::int64_t>(
+                d * static_cast<double>(portfolio::kQtyScale) + 0.5);
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    std::string qty_str(std::int64_t micro) {
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.6f",
+                      static_cast<double>(micro) /
+                          static_cast<double>(portfolio::kQtyScale));
+        std::string s(buf);
+        // trim trailing zeros / dot
+        while (s.find('.') != std::string::npos &&
+               (s.back() == '0' || s.back() == '.')) {
+            const bool dot = s.back() == '.';
+            s.pop_back();
+            if (dot) break;
+        }
+        return s;
+    }
+
+    Json::Value valuation_json(const portfolio::Valuation& v) {
+        Json::Value j(Json::objectValue);
+        j["id"] = v.id;
+        j["account_id"] = v.account_id;
+        j["symbol"] = v.symbol;
+        j["quantity"] = qty_str(v.quantity_micro);
+        j["cost"] = api::money_json(v.cost);
+        j["market_value"] = api::money_json(v.market_value);
+        j["unrealized"] = api::money_json(v.unrealized);
+        j["return_pct"] = v.return_pct;
+        j["priced"] = v.priced;
+        return j;
     }
 
     Json::Value transaction_json(const ledger::Transaction& t) {
@@ -1133,11 +1200,12 @@ namespace {
     // Premium (paid) surface. Everything else under /api/ is free but still
     // requires a valid token. Prefix match covers /{id} path params.
     bool is_premium_path(const std::string& p) {
-        static const std::array<std::string_view, 12> prefixes{
+        static const std::array<std::string_view, 15> prefixes{
             "/api/report",    "/api/suggest",   "/api/export",
             "/api/sync",      "/api/accounts",  "/api/transactions",
             "/api/networth",  "/api/trends",    "/api/goals",
-            "/api/recurring", "/api/forecast",  "/api/plan"};
+            "/api/recurring", "/api/forecast",  "/api/plan",
+            "/api/prices",    "/api/positions", "/api/portfolio"};
         for (const auto pre : prefixes) {
             if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
                 return true;
@@ -1767,14 +1835,39 @@ namespace {
                 open += b.opening_balance;
                 bal += b.current_balance;
             }
+
+            // Investments: portfolio market value per currency.
+            const storage::PositionRepository posRepo{*db};
+            const storage::InstrumentPriceRepository priceRepo{*db};
+            const auto vals = portfolio::value_positions(
+                to_positions(posRepo.list(uid_of(req))),
+                price_map(priceRepo.list(uid_of(req))));
+            std::map<std::string, std::int64_t> inv_by_ccy;
+            for (const auto& [ccy, t] : portfolio::totals_by_currency(vals)) {
+                inv_by_ccy[std::string(money::to_string(ccy))] =
+                    t.market_value.minor_units();
+            }
+
+            std::set<std::string> currencies;
+            for (const auto& [c, _] : by_ccy) currencies.insert(c);
+            for (const auto& [c, _] : inv_by_ccy) currencies.insert(c);
+
             Json::Value totals(Json::arrayValue);
-            for (const auto& [ccy, sums] : by_ccy) {
+            for (const auto& ccy : currencies) {
                 const auto cur = currency_or_eur(ccy);
+                const auto acc = by_ccy.count(ccy) != 0U
+                                     ? by_ccy[ccy]
+                                     : std::pair<std::int64_t, std::int64_t>{};
+                const std::int64_t inv =
+                    inv_by_ccy.count(ccy) != 0U ? inv_by_ccy[ccy] : 0;
                 Json::Value t(Json::objectValue);
                 t["currency"] = ccy;
                 t["opening_balance"] =
-                    api::money_json(money::Money(sums.first, cur));
-                t["net_worth"] = api::money_json(money::Money(sums.second, cur));
+                    api::money_json(money::Money(acc.first, cur));
+                t["net_worth"] = api::money_json(money::Money(acc.second, cur));
+                t["investments"] = api::money_json(money::Money(inv, cur));
+                t["total"] =
+                    api::money_json(money::Money(acc.second + inv, cur));
                 totals.append(t);
             }
             Json::Value out(Json::objectValue);
@@ -2361,6 +2454,309 @@ namespace {
         }
     }
 
+    // ---- investments: prices, positions, portfolio --------------------------
+
+    std::map<std::string, portfolio::Price> price_map(
+        const std::vector<storage::StoredPrice>& rows) {
+        std::map<std::string, portfolio::Price> m;
+        for (const auto& p : rows) {
+            m[p.symbol] = portfolio::Price{p.symbol, p.price_minor,
+                                           currency_or_eur(p.currency)};
+        }
+        return m;
+    }
+
+    std::vector<portfolio::Position> to_positions(
+        const std::vector<storage::StoredPosition>& rows) {
+        std::vector<portfolio::Position> ps;
+        ps.reserve(rows.size());
+        for (const auto& r : rows) {
+            ps.push_back(portfolio::Position{r.id, r.account_id, r.symbol,
+                                             r.quantity_micro, r.cost_minor,
+                                             currency_or_eur(r.currency)});
+        }
+        return ps;
+    }
+
+    void h_prices_get(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::InstrumentPriceRepository repo{*db};
+            Json::Value arr(Json::arrayValue);
+            for (const auto& p : repo.list(uid_of(req))) {
+                const auto cur = currency_or_eur(p.currency);
+                Json::Value j(Json::objectValue);
+                j["symbol"] = p.symbol;
+                j["price"] = api::money_json(money::Money(p.price_minor, cur));
+                j["as_of"] = p.as_of;
+                arr.append(j);
+            }
+            Json::Value out(Json::objectValue);
+            out["prices"] = arr;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_price_put(const HttpRequestPtr& req, Callback&& cb,
+                     std::string symbol) {
+        const auto body = req->getJsonObject();
+        if (!body || !body->isMember("price")) {
+            return send_error(cb, "JSON body with 'price' is required");
+        }
+        auto cur = money::Currency::EUR;
+        if (body->isMember("currency")) {
+            const auto c =
+                money::currency_from_string((*body)["currency"].asString());
+            if (!c.has_value()) {
+                return send_error(cb, "unknown currency");
+            }
+            cur = *c;
+        }
+        const auto& pj = (*body)["price"];
+        std::optional<money::Money> price;
+        if (pj.isString()) {
+            price = money::Money::from_string(pj.asString(), cur);
+        } else {
+            price = money::Money(pj.asInt64(), cur);
+        }
+        if (!price.has_value() || price->is_negative()) {
+            return send_error(cb, "'price' must be a non-negative amount");
+        }
+        std::string as_of = format_iso_date(today_ymd());
+        if (body->isMember("as_of") && !(*body)["as_of"].isNull()) {
+            const auto d = (*body)["as_of"].asString();
+            if (!parse_iso_date(d).has_value()) {
+                return send_error(cb, "'as_of' must be YYYY-MM-DD");
+            }
+            as_of = d;
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::InstrumentPriceRepository repo{*db};
+            repo.upsert(uid_of(req),
+                        storage::StoredPrice{symbol,
+                                             std::string(money::to_string(cur)),
+                                             price->minor_units(), as_of});
+            Json::Value out(Json::objectValue);
+            out["symbol"] = symbol;
+            out["price"] = api::money_json(*price);
+            out["as_of"] = as_of;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_price_delete(const HttpRequestPtr& req, Callback&& cb,
+                        std::string symbol) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::InstrumentPriceRepository repo{*db};
+            if (!repo.remove(uid_of(req), symbol)) {
+                return send_error(cb, "no price for '" + symbol + "'",
+                                  drogon::k404NotFound);
+            }
+            Json::Value out(Json::objectValue);
+            out["deleted"] = symbol;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    // Builds a StoredPosition from JSON. id supplied by caller.
+    std::optional<storage::StoredPosition> position_from_json(
+        const Json::Value& b, std::string id, std::string& err) {
+        if (!b.isMember("symbol") || !b.isMember("quantity") ||
+            !b.isMember("cost")) {
+            err = "'symbol', 'quantity' and 'cost' are required";
+            return std::nullopt;
+        }
+        auto cur = money::Currency::EUR;
+        if (b.isMember("currency")) {
+            const auto c =
+                money::currency_from_string(b["currency"].asString());
+            if (!c.has_value()) {
+                err = "unknown currency";
+                return std::nullopt;
+            }
+            cur = *c;
+        }
+        const auto q = parse_qty_micro(b["quantity"].isString()
+                                           ? b["quantity"].asString()
+                                           : std::to_string(
+                                                 b["quantity"].asDouble()));
+        if (!q.has_value()) {
+            err = "'quantity' is not a valid number";
+            return std::nullopt;
+        }
+        const auto& cj = b["cost"];
+        std::optional<money::Money> cost;
+        if (cj.isString()) {
+            cost = money::Money::from_string(cj.asString(), cur);
+        } else {
+            cost = money::Money(cj.asInt64(), cur);
+        }
+        if (!cost.has_value() || cost->is_negative()) {
+            err = "'cost' must be a non-negative amount";
+            return std::nullopt;
+        }
+        storage::StoredPosition p;
+        p.id = std::move(id);
+        p.account_id = b.isMember("account_id") && !b["account_id"].isNull()
+                           ? b["account_id"].asString()
+                           : "";
+        p.symbol = b["symbol"].asString();
+        p.quantity_micro = *q;
+        p.cost_minor = cost->minor_units();
+        p.currency = std::string(money::to_string(cur));
+        return p;
+    }
+
+    void h_positions_get(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::PositionRepository pos{*db};
+            const storage::InstrumentPriceRepository pr{*db};
+            const auto vals = portfolio::value_positions(
+                to_positions(pos.list(uid_of(req))),
+                price_map(pr.list(uid_of(req))));
+            Json::Value arr(Json::arrayValue);
+            for (const auto& v : vals) {
+                arr.append(valuation_json(v));
+            }
+            Json::Value out(Json::objectValue);
+            out["positions"] = arr;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_positions_post(const HttpRequestPtr& req, Callback&& cb) {
+        const auto body = req->getJsonObject();
+        if (!body) {
+            return send_error(cb, "JSON body is required");
+        }
+        std::string err;
+        const auto p = position_from_json(*body, api::auth::new_id(), err);
+        if (!p.has_value()) {
+            return send_error(cb, err);
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::PositionRepository repo{*db};
+            if (!repo.create(uid_of(req), *p)) {
+                return send_error(cb, "could not create position",
+                                  drogon::k500InternalServerError);
+            }
+            Json::Value out(Json::objectValue);
+            out["id"] = p->id;
+            send_json(cb, out, drogon::k201Created);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_positions_put(const HttpRequestPtr& req, Callback&& cb,
+                         std::string id) {
+        const auto body = req->getJsonObject();
+        if (!body) {
+            return send_error(cb, "JSON body is required");
+        }
+        std::string err;
+        const auto p = position_from_json(*body, id, err);
+        if (!p.has_value()) {
+            return send_error(cb, err);
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::PositionRepository repo{*db};
+            if (!repo.update(uid_of(req), *p)) {
+                return send_error(cb, "position '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            Json::Value out(Json::objectValue);
+            out["id"] = id;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_positions_delete(const HttpRequestPtr& req, Callback&& cb,
+                            std::string id) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::PositionRepository repo{*db};
+            if (!repo.remove(uid_of(req), id)) {
+                return send_error(cb, "position '" + id + "' not found",
+                                  drogon::k404NotFound);
+            }
+            Json::Value out(Json::objectValue);
+            out["deleted"] = id;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_portfolio(const HttpRequestPtr& req, Callback&& cb) {
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            const storage::PositionRepository pos{*db};
+            const storage::InstrumentPriceRepository pr{*db};
+            const auto vals = portfolio::value_positions(
+                to_positions(pos.list(uid_of(req))),
+                price_map(pr.list(uid_of(req))));
+            Json::Value positions(Json::arrayValue);
+            for (const auto& v : vals) {
+                positions.append(valuation_json(v));
+            }
+            Json::Value totals(Json::arrayValue);
+            for (const auto& [ccy, t] : portfolio::totals_by_currency(vals)) {
+                Json::Value j(Json::objectValue);
+                j["currency"] = std::string(money::to_string(ccy));
+                j["cost"] = api::money_json(t.cost);
+                j["market_value"] = api::money_json(t.market_value);
+                j["unrealized"] = api::money_json(t.unrealized);
+                totals.append(j);
+            }
+            Json::Value out(Json::objectValue);
+            out["positions"] = positions;
+            out["totals"] = totals;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -2459,6 +2855,16 @@ int main() {
     app.registerHandler("/api/recurring", &h_recurring, {Get});
     app.registerHandler("/api/forecast", &h_forecast, {Get});
     app.registerHandler("/api/plan", &h_plan, {Get});
+
+    // ---- investments ---------------------------------------------------------
+    app.registerHandler("/api/prices", &h_prices_get, {Get});
+    app.registerHandler("/api/prices/{symbol}", &h_price_put, {Put});
+    app.registerHandler("/api/prices/{symbol}", &h_price_delete, {Delete});
+    app.registerHandler("/api/positions", &h_positions_get, {Get});
+    app.registerHandler("/api/positions", &h_positions_post, {Post});
+    app.registerHandler("/api/positions/{id}", &h_positions_put, {Put});
+    app.registerHandler("/api/positions/{id}", &h_positions_delete, {Delete});
+    app.registerHandler("/api/portfolio", &h_portfolio, {Get});
 
     // ---- CRUD: transactions --------------------------------------------------
     app.registerHandler("/api/transactions", &h_tx_get_all, {Get});

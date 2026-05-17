@@ -48,6 +48,7 @@ namespace wealthtorii::api {
     { "name": "storage", "description": "Persistance Postgres" },
     { "name": "analytics", "description": "Suggestions de budget" },
     { "name": "goals", "description": "Objectifs d'epargne (projets saving)" },
+    { "name": "investments", "description": "Prix, positions et valorisation du portefeuille" },
     { "name": "export", "description": "Export CSV" }
   ],
   "paths": {
@@ -397,6 +398,96 @@ namespace wealthtorii::api {
           "400": { "$ref": "#/components/responses/BadRequest" },
           "402": { "$ref": "#/components/responses/PaymentRequired" },
           "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/prices": {
+      "get": {
+        "tags": ["investments"],
+        "summary": "Liste les prix saisis (par symbole)",
+        "responses": {
+          "200": { "description": "Prix", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
+        }
+      }
+    },
+    "/api/prices/{symbol}": {
+      "put": {
+        "tags": ["investments"],
+        "summary": "Definit/maj le prix d'un symbole",
+        "parameters": [ { "name": "symbol", "in": "path", "required": true, "schema": { "type": "string" }, "example": "AAPL" } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "required": ["price"],
+          "properties": {
+            "price": { "type": "string", "example": "180,00" },
+            "currency": { "type": "string", "enum": ["EUR","USD","CHF"], "default": "EUR" },
+            "as_of": { "type": "string", "example": "2026-05-17" }
+          }
+        } } } },
+        "responses": {
+          "200": { "description": "Prix enregistre", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
+        }
+      },
+      "delete": {
+        "tags": ["investments"],
+        "summary": "Supprime le prix d'un symbole",
+        "parameters": [ { "name": "symbol", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Supprime", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/positions": {
+      "get": {
+        "tags": ["investments"],
+        "summary": "Positions valorisees (valeur, +/-value, rendement)",
+        "responses": {
+          "200": { "description": "Positions", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
+        }
+      },
+      "post": {
+        "tags": ["investments"],
+        "summary": "Cree une position",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PositionInput" } } } },
+        "responses": {
+          "201": { "description": "Creee", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
+        }
+      }
+    },
+    "/api/positions/{id}": {
+      "put": {
+        "tags": ["investments"],
+        "summary": "Met a jour une position",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/PositionInput" } } } },
+        "responses": {
+          "200": { "description": "Maj", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      },
+      "delete": {
+        "tags": ["investments"],
+        "summary": "Supprime une position",
+        "parameters": [ { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } } ],
+        "responses": {
+          "200": { "description": "Supprimee", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "404": { "$ref": "#/components/responses/BadRequest" }
+        }
+      }
+    },
+    "/api/portfolio": {
+      "get": {
+        "tags": ["investments"],
+        "summary": "Portefeuille valorise + totaux par devise (cout, valeur, +/-value)",
+        "responses": {
+          "200": { "description": "Portefeuille", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "402": { "$ref": "#/components/responses/PaymentRequired" }
         }
       }
     },
@@ -766,6 +857,17 @@ namespace wealthtorii::api {
           "months": { "type": "integer" },
           "ending": { "type": "string" },
           "suggestions": { "type": "array", "items": { "type": "object" } }
+        }
+      },
+      "PositionInput": {
+        "type": "object",
+        "required": ["symbol","quantity","cost"],
+        "properties": {
+          "symbol": { "type": "string", "example": "AAPL" },
+          "quantity": { "type": "string", "example": "10", "description": "Quantite (fractions OK, ex: 0.5)" },
+          "cost": { "type": "string", "example": "1500,00", "description": "Cout total (PRU x quantite)" },
+          "currency": { "type": "string", "enum": ["EUR","USD","CHF"], "default": "EUR" },
+          "account_id": { "type": "string", "nullable": true, "description": "Regroupement optionnel" }
         }
       },
       "GoalInput": {

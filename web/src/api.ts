@@ -64,7 +64,13 @@ export const api = {
   networth: () =>
     request<{
       accounts: Array<{ id: string; name: string; currency: string; type: string; balance: Money; opening_balance: Money }>;
-      totals: Array<{ currency: string; net_worth: Money; opening_balance: Money }>;
+      totals: Array<{
+        currency: string;
+        net_worth: Money;
+        opening_balance: Money;
+        investments: Money;
+        total: Money;
+      }>;
     }>("GET", "/api/networth"),
   goals: () =>
     request<{
@@ -192,6 +198,68 @@ export const api = {
     request<unknown>(
       "DELETE",
       `/api/transactions/${encodeURIComponent(id)}`,
+    ),
+
+  // ---- investments ----
+  portfolio: () =>
+    request<{
+      positions: Array<{
+        id: string;
+        account_id: string;
+        symbol: string;
+        quantity: string;
+        cost: Money;
+        market_value: Money;
+        unrealized: Money;
+        return_pct: number;
+        priced: boolean;
+      }>;
+      totals: Array<{
+        currency: string;
+        cost: Money;
+        market_value: Money;
+        unrealized: Money;
+      }>;
+    }>("GET", "/api/portfolio"),
+  prices: () =>
+    request<{
+      prices: Array<{ symbol: string; price: Money; as_of: string }>;
+    }>("GET", "/api/prices"),
+  setPrice: (
+    symbol: string,
+    b: { price: string; currency?: string; as_of?: string },
+  ) =>
+    request<unknown>(
+      "PUT",
+      `/api/prices/${encodeURIComponent(symbol)}`,
+      b,
+    ),
+  deletePrice: (symbol: string) =>
+    request<unknown>(
+      "DELETE",
+      `/api/prices/${encodeURIComponent(symbol)}`,
+    ),
+  createPosition: (b: {
+    symbol: string;
+    quantity: string;
+    cost: string;
+    currency?: string;
+    account_id?: string;
+  }) => request<unknown>("POST", "/api/positions", b),
+  updatePosition: (
+    id: string,
+    b: {
+      symbol: string;
+      quantity: string;
+      cost: string;
+      currency?: string;
+      account_id?: string;
+    },
+  ) => request<unknown>("PUT", `/api/positions/${encodeURIComponent(id)}`, b),
+  deletePosition: (id: string) =>
+    request<unknown>(
+      "DELETE",
+      `/api/positions/${encodeURIComponent(id)}`,
     ),
 };
 
