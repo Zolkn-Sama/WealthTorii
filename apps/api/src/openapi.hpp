@@ -351,6 +351,39 @@ namespace wealthtorii::api {
         }
       }
     },
+    "/api/recurring": {
+      "get": {
+        "tags": ["analytics"],
+        "summary": "Detecte les prelevements/recettes recurrents (mensuels)",
+        "parameters": [
+          { "name": "account", "in": "query", "required": true, "schema": { "type": "string" }, "example": "bp-main" }
+        ],
+        "responses": {
+          "200": { "description": "Liste des recurrents (label, montant moyen, derniere/prochaine echeance)", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
+    "/api/forecast": {
+      "get": {
+        "tags": ["analytics"],
+        "summary": "Prevision de tresorerie : solde projete a un horizon via les recurrents",
+        "parameters": [
+          { "name": "account", "in": "query", "required": true, "schema": { "type": "string" }, "example": "bp-main" },
+          { "name": "until", "in": "query", "required": false, "schema": { "type": "string" }, "example": "2026-12-31", "description": "Horizon YYYY-MM-DD" },
+          { "name": "months", "in": "query", "required": false, "schema": { "type": "integer" }, "description": "Alternative: horizon = fin du mois dans N mois (defaut: fin du mois courant)" }
+        ],
+        "responses": {
+          "200": { "description": "current_balance, projected_balance, echeances attendues", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "404": { "$ref": "#/components/responses/BadRequest" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/goals": {
       "get": {
         "tags": ["goals"],

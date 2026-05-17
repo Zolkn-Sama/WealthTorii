@@ -1131,10 +1131,11 @@ namespace {
     // Premium (paid) surface. Everything else under /api/ is free but still
     // requires a valid token. Prefix match covers /{id} path params.
     bool is_premium_path(const std::string& p) {
-        static const std::array<std::string_view, 9> prefixes{
+        static const std::array<std::string_view, 11> prefixes{
             "/api/report",   "/api/suggest",      "/api/export",
             "/api/sync",     "/api/accounts",     "/api/transactions",
-            "/api/networth", "/api/trends",       "/api/goals"};
+            "/api/networth", "/api/trends",       "/api/goals",
+            "/api/recurring", "/api/forecast"};
         for (const auto pre : prefixes) {
             if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
                 return true;
@@ -2043,6 +2044,182 @@ namespace {
         }
     }
 
+    // ---- recurring & forecast -----------------------------------------------
+
+    std::chrono::year_month_day add_month_ymd(std::chrono::year_month_day d) {
+        const auto ym = std::chrono::year_month{d.year(), d.month()} +
+                        std::chrono::months{1};
+        std::chrono::year_month_day cand{ym.year(), ym.month(), d.day()};
+        if (!cand.ok()) {
+            return std::chrono::year_month_day{ym.year() / ym.month() /
+                                               std::chrono::last};
+        }
+        return cand;
+    }
+
+    std::chrono::year_month_day end_of_month(std::chrono::year_month_day d) {
+        return std::chrono::year_month_day{d.year() / d.month() /
+                                           std::chrono::last};
+    }
+
+    Json::Value recurring_json(const analytics::RecurringItem& r) {
+        Json::Value v(Json::objectValue);
+        v["label"] = r.label;
+        v["category_id"] = r.category_id.has_value()
+                               ? Json::Value(*r.category_id)
+                               : Json::Value(Json::nullValue);
+        v["average_amount"] = api::money_json(r.average_amount);
+        v["occurrences"] = r.occurrences;
+        v["last_date"] = format_iso_date(r.last_date);
+        v["next_date"] = format_iso_date(r.next_date);
+        return v;
+    }
+
+    money::Currency account_currency(const HttpRequestPtr& req,
+                                     const std::string& account) {
+        auto db = storage::Connection::database_url_from_env();
+        if (!db.has_value()) {
+            return money::Currency::EUR;
+        }
+        try {
+            storage::Connection c{*db};
+            storage::AccountRepository repo{c};
+            if (const auto b = repo.balance_of(uid_of(req), account);
+                b.has_value()) {
+                return currency_or_eur(b->currency);
+            }
+        } catch (...) {
+        }
+        return money::Currency::EUR;
+    }
+
+    void h_recurring(const HttpRequestPtr& req, Callback&& cb) {
+        const auto account = req->getParameter("account");
+        if (account.empty()) {
+            return send_error(cb, "query parameter 'account' is required");
+        }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
+        std::string err;
+        const auto journal = journal_from_db(account, err);
+        if (!journal.has_value()) {
+            return send_error(cb, err, drogon::k500InternalServerError);
+        }
+        try {
+            const auto cur = account_currency(req, account);
+            Json::Value arr(Json::arrayValue);
+            for (const auto& r : analytics::detect_recurring(*journal, cur)) {
+                arr.append(recurring_json(r));
+            }
+            Json::Value out(Json::objectValue);
+            out["account"] = account;
+            out["recurring"] = arr;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
+    void h_forecast(const HttpRequestPtr& req, Callback&& cb) {
+        const auto account = req->getParameter("account");
+        if (account.empty()) {
+            return send_error(cb, "query parameter 'account' is required");
+        }
+        const auto today = today_ymd();
+        std::chrono::year_month_day horizon = end_of_month(today);
+        if (auto u = req->getParameter("until"); !u.empty()) {
+            const auto d = parse_iso_date(u);
+            if (!d.has_value()) {
+                return send_error(cb, "'until' must be YYYY-MM-DD");
+            }
+            horizon = *d;
+        } else if (auto m = req->getParameter("months"); !m.empty()) {
+            int n = 0;
+            try {
+                n = std::stoi(m);
+            } catch (...) {
+                n = 0;
+            }
+            if (n <= 0) {
+                return send_error(cb, "'months' must be a positive integer");
+            }
+            auto ym = std::chrono::year_month{today.year(), today.month()} +
+                      std::chrono::months{n};
+            horizon = std::chrono::year_month_day{ym.year() / ym.month() /
+                                                  std::chrono::last};
+        }
+        if (std::chrono::sys_days{horizon} < std::chrono::sys_days{today}) {
+            return send_error(cb, "horizon is in the past");
+        }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
+        auto db = open_db(cb);
+        if (!db) {
+            return;
+        }
+        try {
+            storage::AccountRepository accounts{*db};
+            const auto bal = accounts.balance_of(uid_of(req), account);
+            if (!bal.has_value()) {
+                return send_error(cb, "account '" + account + "' not found",
+                                  drogon::k404NotFound);
+            }
+            const auto cur = currency_or_eur(bal->currency);
+            std::string err;
+            const auto journal = journal_from_db(account, err);
+            if (!journal.has_value()) {
+                return send_error(cb, err, drogon::k500InternalServerError);
+            }
+            const auto recurring =
+                analytics::detect_recurring(*journal, cur);
+
+            std::int64_t delta = 0;
+            std::vector<std::pair<std::string, Json::Value>> rows;
+            for (const auto& r : recurring) {
+                auto when = r.next_date;
+                // Roll forward to the first occurrence not in the past.
+                while (std::chrono::sys_days{when} <
+                       std::chrono::sys_days{today}) {
+                    when = add_month_ymd(when);
+                }
+                while (std::chrono::sys_days{when} <=
+                       std::chrono::sys_days{horizon}) {
+                    delta += r.average_amount.minor_units();
+                    Json::Value e(Json::objectValue);
+                    const auto iso = format_iso_date(when);
+                    e["date"] = iso;
+                    e["label"] = r.label;
+                    e["amount"] = api::money_json(r.average_amount);
+                    rows.emplace_back(iso, std::move(e));
+                    when = add_month_ymd(when);
+                }
+            }
+            std::sort(rows.begin(), rows.end(),
+                      [](const auto& a, const auto& b) {
+                          return a.first < b.first;
+                      });
+            Json::Value events(Json::arrayValue);
+            for (auto& [_, e] : rows) {
+                events.append(std::move(e));
+            }
+
+            Json::Value out(Json::objectValue);
+            out["account"] = account;
+            out["as_of"] = format_iso_date(today);
+            out["horizon"] = format_iso_date(horizon);
+            out["current_balance"] =
+                api::money_json(money::Money(bal->current_balance, cur));
+            out["projected_balance"] = api::money_json(
+                money::Money(bal->current_balance + delta, cur));
+            out["expected"] = events;
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -2118,6 +2295,10 @@ int main() {
                         {Post});
     app.registerHandler("/api/goals/{id}/contributions", &h_goal_contrib_get,
                         {Get});
+
+    // ---- recurring & forecast ------------------------------------------------
+    app.registerHandler("/api/recurring", &h_recurring, {Get});
+    app.registerHandler("/api/forecast", &h_forecast, {Get});
 
     // ---- CRUD: transactions --------------------------------------------------
     app.registerHandler("/api/transactions", &h_tx_get_all, {Get});

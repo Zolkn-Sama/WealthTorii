@@ -5,6 +5,7 @@
 
 #include <chrono>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -52,5 +53,25 @@ namespace wealthtorii::analytics {
         money::Currency currency,
         std::int64_t safety_ratio_pct = 10,
         std::int64_t round_to_minor = 500);
+
+    // A detected recurring charge/credit (subscriptions, salary, rent…).
+    // amount is signed (negative = outflow). next_date is the predicted next
+    // occurrence (last_date + 1 month, clamped to month end).
+    struct RecurringItem {
+        std::string label;                       // representative description
+        std::optional<std::string> category_id;
+        money::Money average_amount;
+        unsigned occurrences = 0;
+        std::chrono::year_month_day last_date{};
+        std::chrono::year_month_day next_date{};
+    };
+
+    // Detects monthly-recurring transactions: groups by a normalised
+    // description, keeps groups with >= min_occurrences whose consecutive
+    // dates are ~1 month apart and whose amounts are stable and same-signed.
+    // Sorted by next_date ascending.
+    [[nodiscard]] std::vector<RecurringItem> detect_recurring(
+        const ledger::Journal& journal, money::Currency currency,
+        unsigned min_occurrences = 3);
 
 } // namespace wealthtorii::analytics
