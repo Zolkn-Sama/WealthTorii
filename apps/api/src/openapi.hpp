@@ -33,7 +33,7 @@ namespace wealthtorii::api {
   "info": {
     "title": "WealthTorii API",
     "version": "0.1.0",
-    "description": "Couche HTTP exposant les fonctionnalites du CLI WealthTorii.\n\nAUTH : POST /api/auth/register puis /api/auth/login renvoient un JWT. Cliquez sur 'Authorize' et collez le token. Tous les endpoints /api/* (sauf register/login) exigent un Bearer token.\n\nFREEMIUM : GRATUIT = allocate, categories, budget, rules, import. PREMIUM (plan 'premium', sinon 402) = report, suggest, export, accounts, transactions, sync.\n\nLes comptes et transactions sont cloisonnes par utilisateur. Les endpoints Postgres necessitent DATABASE_URL cote serveur."
+    "description": "Outil de finances personnelles WealthTorii.\n\nAUTH : POST /api/auth/register puis /api/auth/login renvoient un JWT. Cliquez sur 'Authorize' et collez le token. Tous les endpoints /api/* (sauf register/login) exigent un Bearer token.\n\nFREEMIUM : GRATUIT = allocate, categories, budget, rules, import. PREMIUM (plan 'premium', sinon 402) = report, suggest, export, accounts, transactions, sync, networth, trends, goals, recurring, forecast, plan.\n\nMETIER : soldes & patrimoine net (networth), objectifs d'epargne (goals), recurrents & prevision de tresorerie (recurring/forecast), allocation personnalisee avec reste a vivre (plan).\n\nCloisonnement par utilisateur : comptes, transactions, budgets, regles et objectifs. Les endpoints Postgres necessitent DATABASE_URL cote serveur."
   },
   "servers": [{ "url": "/" }],
   "security": [{ "bearerAuth": [] }],
