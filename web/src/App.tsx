@@ -218,11 +218,13 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   const [trends, setTrends] = useState<R<DataOf<typeof api.trends>>>(null);
   const [forecast, setForecast] = useState<R<DataOf<typeof api.forecast>>>(null);
   const [txs, setTxs] = useState<R<DataOf<typeof api.listTransactions>>>(null);
+  const [pf, setPf] = useState<R<DataOf<typeof api.portfolio>>>(null);
 
   const [selAcc, setSelAcc] = useState("");
   const [editAcc, setEditAcc] = useState<string | null>(null);
   const [editGoal, setEditGoal] = useState<string | null>(null);
   const [editTx, setEditTx] = useState<string | null>(null);
+  const [editPos, setEditPos] = useState<string | null>(null);
 
   const loadTxs = useCallback((acc: string) => {
     if (!acc) {
@@ -249,13 +251,15 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
   }, [loadTxs]);
   const loadGoals = useCallback(() => api.goals().then(setGoals), []);
   const loadBudget = useCallback(() => api.getBudget().then(setBudget), []);
+  const loadPf = useCallback(() => api.portfolio().then(setPf), []);
 
   useEffect(() => {
     api.me().then(setMe);
     loadNw();
     loadGoals();
     loadBudget();
-  }, [loadNw, loadGoals, loadBudget]);
+    loadPf();
+  }, [loadNw, loadGoals, loadBudget, loadPf]);
 
   function selectAccount(acc: string) {
     setSelAcc(acc);
@@ -741,6 +745,146 @@ function Dashboard({ onLogout }: { onLogout: () => void }) {
               </div>
               <div className="muted small">
                 {d.expected.length} échéance(s) attendue(s)
+              </div>
+            </>
+          )}
+        </Section>
+
+        <Section title="Portefeuille" result={pf}>
+          {(d) => (
+            <>
+              {d.totals.map((t) => (
+                <div key={t.currency} className="row">
+                  <span>
+                    Valeur · <span className="muted">PRU {t.cost.display}</span>
+                  </span>
+                  <span>
+                    <b>{t.market_value.display}</b>{" "}
+                    <span
+                      className={
+                        t.unrealized.minor_units >= 0 ? "pos" : "neg"
+                      }
+                    >
+                      ({t.unrealized.display})
+                    </span>
+                  </span>
+                </div>
+              ))}
+              <table>
+                <tbody>
+                  {d.positions.length === 0 && (
+                    <tr>
+                      <td className="muted">Aucune position.</td>
+                    </tr>
+                  )}
+                  {d.positions.map((p) => (
+                    <tr key={p.id}>
+                      <td>
+                        <b>{p.symbol}</b>{" "}
+                        <span className="muted small">×{p.quantity}</span>
+                        {!p.priced && (
+                          <span className="muted small"> · sans prix</span>
+                        )}
+                        {editPos === p.id && (
+                          <InlineForm
+                            fields={[
+                              { name: "symbol", label: "symbole", required: true },
+                              { name: "quantity", label: "quantité", required: true },
+                              { name: "cost", label: "coût total", required: true },
+                            ]}
+                            initial={{
+                              symbol: p.symbol,
+                              quantity: p.quantity,
+                              cost: moneyInput(p.cost),
+                            }}
+                            submitLabel="Enregistrer"
+                            onSubmit={(v) =>
+                              api.updatePosition(p.id, {
+                                symbol: v.symbol,
+                                quantity: v.quantity,
+                                cost: v.cost,
+                              })
+                            }
+                            onDone={() => {
+                              setEditPos(null);
+                              loadPf();
+                              loadNw();
+                            }}
+                          />
+                        )}
+                      </td>
+                      <td className="num">
+                        {p.market_value.display}
+                        <br />
+                        <span
+                          className={
+                            p.unrealized.minor_units >= 0 ? "pos" : "neg"
+                          }
+                        >
+                          {p.unrealized.display} ·{" "}
+                          {p.return_pct.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="actions">
+                        <IconBtn
+                          label="✎"
+                          onClick={() =>
+                            setEditPos(editPos === p.id ? null : p.id)
+                          }
+                        />
+                        <IconBtn
+                          label="🗑"
+                          danger
+                          onClick={() => {
+                            if (confirm(`Supprimer la position ${p.symbol} ?`)) {
+                              api.deletePosition(p.id).then(() => {
+                                loadPf();
+                                loadNw();
+                              });
+                            }
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div className="addbox">
+                <span className="muted small">Nouvelle position</span>
+                <InlineForm
+                  fields={[
+                    { name: "symbol", label: "symbole (ex: AAPL)", required: true },
+                    { name: "quantity", label: "quantité", required: true },
+                    { name: "cost", label: "coût total (ex: 1500,00)", required: true },
+                  ]}
+                  submitLabel="Ajouter"
+                  onSubmit={(v) =>
+                    api.createPosition({
+                      symbol: v.symbol,
+                      quantity: v.quantity,
+                      cost: v.cost,
+                    })
+                  }
+                  onDone={() => {
+                    loadPf();
+                    loadNw();
+                  }}
+                />
+                <span className="muted small">Mettre à jour un prix</span>
+                <InlineForm
+                  fields={[
+                    { name: "symbol", label: "symbole", required: true },
+                    { name: "price", label: "prix unitaire", required: true },
+                  ]}
+                  submitLabel="Prix"
+                  onSubmit={(v) =>
+                    api.setPrice(v.symbol, { price: v.price })
+                  }
+                  onDone={() => {
+                    loadPf();
+                    loadNw();
+                  }}
+                />
               </div>
             </>
           )}

@@ -231,4 +231,52 @@ namespace wealthtorii::storage {
         Connection* conn_;
     };
 
+    // ---- investments --------------------------------------------------------
+
+    struct StoredPrice {
+        std::string symbol;
+        std::string currency;
+        std::int64_t price_minor = 0;
+        std::string as_of; // ISO yyyy-mm-dd
+    };
+
+    class InstrumentPriceRepository {
+    public:
+        explicit InstrumentPriceRepository(Connection& conn) noexcept
+            : conn_(&conn) {}
+
+        // Upserts the latest price for (user, symbol).
+        void upsert(std::string_view user_id, const StoredPrice& p);
+        [[nodiscard]] std::vector<StoredPrice> list(
+            std::string_view user_id) const;
+        bool remove(std::string_view user_id, std::string_view symbol);
+
+    private:
+        Connection* conn_;
+    };
+
+    struct StoredPosition {
+        std::string id;
+        std::string account_id; // optional label, "" -> stored NULL
+        std::string symbol;
+        std::int64_t quantity_micro = 0;
+        std::int64_t cost_minor = 0;
+        std::string currency;
+    };
+
+    class PositionRepository {
+    public:
+        explicit PositionRepository(Connection& conn) noexcept
+            : conn_(&conn) {}
+
+        bool create(std::string_view user_id, const StoredPosition& p);
+        bool update(std::string_view user_id, const StoredPosition& p);
+        bool remove(std::string_view user_id, std::string_view id);
+        [[nodiscard]] std::vector<StoredPosition> list(
+            std::string_view user_id) const;
+
+    private:
+        Connection* conn_;
+    };
+
 } // namespace wealthtorii::storage
