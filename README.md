@@ -89,10 +89,16 @@ npm --prefix web ci
 npm --prefix web run build          # génère web/dist (servi en statique)
 
 # API + UI web + Swagger UI
-DATABASE_URL="$DATABASE_URL" ./build/dev/apps/api/wt_api
+export JWT_SECRET="change-me-en-prod"   # optionnel : défaut dev si absent
+DATABASE_URL="$DATABASE_URL" JWT_SECRET="$JWT_SECRET" ./build/dev/apps/api/wt_api
 # → http://127.0.0.1:8080         (UI web si web/dist présent)
 # → http://127.0.0.1:8080/swagger (doc API)
 ```
+
+> Un compte fraîchement créé est en plan **`free`** : les cartes premium du
+> dashboard affichent « 🔒 premium ». Pour tout débloquer en local :
+> `psql "$DATABASE_URL" -c "UPDATE users SET plan='premium' WHERE email='ton@email';"`
+> puis se reconnecter (le plan est porté par le JWT).
 
 Tests : `ctest --preset test-dev` (les tests `storage` se sautent
 automatiquement si `DATABASE_URL` est absent).
