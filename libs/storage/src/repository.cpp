@@ -292,13 +292,15 @@ namespace wealthtorii::storage {
     }
 
     namespace {
-        AccountBalance row_to_balance(const pqxx::row& row) {
+        // libpqxx yields row or row_ref depending on version — accept both.
+        template <class Row>
+        AccountBalance row_to_balance(const Row& row) {
             AccountBalance b;
-            b.id = row[0].as<std::string>();
-            b.name = row[1].as<std::string>();
-            b.currency = row[2].as<std::string>();
-            b.opening_balance = row[3].as<std::int64_t>();
-            b.current_balance = row[4].as<std::int64_t>();
+            b.id = row[0].template as<std::string>();
+            b.name = row[1].template as<std::string>();
+            b.currency = row[2].template as<std::string>();
+            b.opening_balance = row[3].template as<std::int64_t>();
+            b.current_balance = row[4].template as<std::int64_t>();
             return b;
         }
     } // namespace
