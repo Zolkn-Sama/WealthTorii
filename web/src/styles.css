@@ -109,3 +109,35 @@ th { color: var(--muted); font-weight: 500; }
   margin: 0.35rem 0;
 }
 .bar-fill { height: 100%; background: var(--accent); }
+
+.addbox {
+  margin-top: 0.9rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+.addbox > .small { display: block; margin-bottom: 0.4rem; }
+
+.iform {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  align-items: center;
+  margin-top: 0.35rem;
+}
+.iform input,
+.iform select {
+  flex: 1 1 120px;
+  min-width: 0;
+  padding: 0.45rem 0.55rem;
+  border-radius: 7px;
+  border: 1px solid var(--line);
+  background: #0f1218;
+  color: var(--fg);
+  font-size: 0.9rem;
+}
+.iform button {
+  flex: 0 0 auto;
+  padding: 0.45rem 0.8rem;
+  font-size: 0.9rem;
+}
+.iform .error { flex-basis: 100%; }

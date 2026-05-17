@@ -94,4 +94,49 @@ export const api = {
       projected_balance: Money;
       expected: Array<{ date: string; label: string; amount: Money }>;
     }>("GET", `/api/forecast?account=${encodeURIComponent(account)}`),
+
+  // ---- writes ----
+  createAccount: (b: {
+    id: string;
+    name: string;
+    currency?: string;
+    type?: string;
+    opening_balance?: string;
+  }) => request<unknown>("POST", "/api/accounts", b),
+
+  createTransaction: (b: {
+    id: string;
+    account_id: string;
+    date: string;
+    amount: string;
+    description?: string;
+    category_id?: string;
+  }) => request<unknown>("POST", "/api/transactions", b),
+
+  getBudget: () =>
+    request<{
+      currency: string;
+      total: Money;
+      limits: Array<{ category: string; limit: Money }>;
+    }>("GET", "/api/budget"),
+  setBudget: (b: { category: string; amount: string; currency?: string }) =>
+    request<unknown>("POST", "/api/budget", b),
+
+  createGoal: (b: {
+    name: string;
+    target: string;
+    currency?: string;
+    target_date?: string;
+  }) => request<unknown>("POST", "/api/goals", b),
+
+  addContribution: (
+    goalId: string,
+    b: { amount: string; date?: string; note?: string },
+  ) =>
+    request<unknown>(
+      "POST",
+      `/api/goals/${encodeURIComponent(goalId)}/contributions`,
+      b,
+    ),
 };
+
