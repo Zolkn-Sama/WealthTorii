@@ -1131,11 +1131,11 @@ namespace {
     // Premium (paid) surface. Everything else under /api/ is free but still
     // requires a valid token. Prefix match covers /{id} path params.
     bool is_premium_path(const std::string& p) {
-        static const std::array<std::string_view, 11> prefixes{
-            "/api/report",   "/api/suggest",      "/api/export",
-            "/api/sync",     "/api/accounts",     "/api/transactions",
-            "/api/networth", "/api/trends",       "/api/goals",
-            "/api/recurring", "/api/forecast"};
+        static const std::array<std::string_view, 12> prefixes{
+            "/api/report",    "/api/suggest",   "/api/export",
+            "/api/sync",      "/api/accounts",  "/api/transactions",
+            "/api/networth",  "/api/trends",    "/api/goals",
+            "/api/recurring", "/api/forecast",  "/api/plan"};
         for (const auto pre : prefixes) {
             if (p.size() >= pre.size() && p.compare(0, pre.size(), pre) == 0) {
                 return true;
@@ -2220,6 +2220,145 @@ namespace {
         }
     }
 
+    // ---- personalised allocation plan ---------------------------------------
+
+    // Monthly effort to reach a goal by its deadline (0 if reached / no date).
+    std::int64_t goal_required_monthly(const storage::GoalProgress& gp) {
+        if (!gp.goal.target_date.has_value()) {
+            return 0;
+        }
+        const auto remaining = gp.goal.target_minor > gp.saved_minor
+                                   ? gp.goal.target_minor - gp.saved_minor
+                                   : 0;
+        if (remaining == 0) {
+            return 0;
+        }
+        const auto td = parse_iso_date(*gp.goal.target_date);
+        if (!td.has_value()) {
+            return remaining;
+        }
+        const int ml = months_until(today_ymd(), *td);
+        return ml > 0 ? (remaining + ml - 1) / ml : remaining;
+    }
+
+    void h_plan(const HttpRequestPtr& req, Callback&& cb) {
+        const auto account = req->getParameter("account");
+        if (account.empty()) {
+            return send_error(cb, "query parameter 'account' is required");
+        }
+        if (!require_account_owner(req, cb, account)) {
+            return;
+        }
+        const auto cfg = db_load_budget(req, cb);
+        if (!cfg.has_value()) {
+            return;
+        }
+        const auto cur = cfg->currency;
+
+        // Income: explicit ?income= wins, else sum of detected recurring
+        // inflows on the account.
+        std::int64_t income_minor = 0;
+        std::string income_source = "recurring";
+        if (auto q = req->getParameter("income"); !q.empty()) {
+            const auto m = money::Money::from_string(q, cur);
+            if (!m.has_value() || m->is_negative()) {
+                return send_error(cb, "'income' is not a valid amount");
+            }
+            income_minor = m->minor_units();
+            income_source = "provided";
+        } else {
+            std::string err;
+            const auto journal = journal_from_db(account, err);
+            if (!journal.has_value()) {
+                return send_error(cb, err, drogon::k500InternalServerError);
+            }
+            for (const auto& r : analytics::detect_recurring(*journal, cur)) {
+                if (!r.average_amount.is_negative() &&
+                    !r.average_amount.is_zero()) {
+                    income_minor += r.average_amount.minor_units();
+                }
+            }
+        }
+
+        // Committed: budget limits + goal monthly efforts.
+        std::int64_t budget_total = 0;
+        Json::Value by_cat(Json::arrayValue);
+        for (const auto& [c, limit] : cfg->limits) {
+            budget_total += limit.minor_units();
+            Json::Value row(Json::objectValue);
+            row["category"] = c;
+            row["limit"] = api::money_json(limit);
+            by_cat.append(row);
+        }
+
+        std::int64_t goals_total = 0;
+        Json::Value goal_rows(Json::arrayValue);
+        try {
+            auto db = open_db(cb);
+            if (!db) {
+                return;
+            }
+            const storage::SavingsGoalRepository goals{*db};
+            for (const auto& gp : goals.list(uid_of(req))) {
+                const auto rm = goal_required_monthly(gp);
+                if (rm == 0) {
+                    continue;
+                }
+                goals_total += rm;
+                Json::Value g(Json::objectValue);
+                g["id"] = gp.goal.id;
+                g["name"] = gp.goal.name;
+                g["required_monthly"] =
+                    api::money_json(money::Money(rm, cur));
+                goal_rows.append(g);
+            }
+
+            const std::int64_t remaining =
+                income_minor - budget_total - goals_total;
+
+            Json::Value out(Json::objectValue);
+            out["account"] = account;
+            out["currency"] = std::string(money::to_string(cur));
+            out["income"] = api::money_json(money::Money(income_minor, cur));
+            out["income_source"] = income_source;
+
+            Json::Value b(Json::objectValue);
+            b["total"] = api::money_json(money::Money(budget_total, cur));
+            b["by_category"] = by_cat;
+            out["budgets"] = b;
+
+            Json::Value g(Json::objectValue);
+            g["total_required_monthly"] =
+                api::money_json(money::Money(goals_total, cur));
+            g["items"] = goal_rows;
+            out["goals"] = g;
+
+            out["leftover"] =
+                api::money_json(money::Money(remaining, cur));
+            out["over_allocated"] = remaining < 0;
+
+            if (income_minor > 0) {
+                const auto alloc = budget::allocate_50_30_20(
+                    money::Money(income_minor, cur));
+                Json::Value ref(Json::objectValue);
+                ref["needs"] = api::money_json(
+                    alloc.at(budget::Bucket::NEEDS));
+                ref["wants"] = api::money_json(
+                    alloc.at(budget::Bucket::WANTS));
+                ref["savings_invest"] = api::money_json(
+                    alloc.at(budget::Bucket::SAVINGS_INVEST));
+                out["reference_50_30_20"] = ref;
+            }
+            if (income_minor == 0) {
+                out["warning"] =
+                    "no income detected — pass ?income=<amount>";
+            }
+            send_json(cb, out);
+        } catch (const std::exception& e) {
+            send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+    }
+
 } // namespace
 
 int main() {
@@ -2299,6 +2438,7 @@ int main() {
     // ---- recurring & forecast ------------------------------------------------
     app.registerHandler("/api/recurring", &h_recurring, {Get});
     app.registerHandler("/api/forecast", &h_forecast, {Get});
+    app.registerHandler("/api/plan", &h_plan, {Get});
 
     // ---- CRUD: transactions --------------------------------------------------
     app.registerHandler("/api/transactions", &h_tx_get_all, {Get});

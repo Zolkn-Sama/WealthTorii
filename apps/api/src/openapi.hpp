@@ -384,6 +384,22 @@ namespace wealthtorii::api {
         }
       }
     },
+    "/api/plan": {
+      "get": {
+        "tags": ["analytics"],
+        "summary": "Plan d'allocation perso : revenu vs budgets + objectifs, reste a vivre",
+        "parameters": [
+          { "name": "account", "in": "query", "required": true, "schema": { "type": "string" }, "example": "bp-main" },
+          { "name": "income", "in": "query", "required": false, "schema": { "type": "string" }, "description": "Revenu mensuel (sinon estime via les recurrents inflow)" }
+        ],
+        "responses": {
+          "200": { "description": "income, budgets, goals, leftover (reste a vivre), reference_50_30_20", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/goals": {
       "get": {
         "tags": ["goals"],
