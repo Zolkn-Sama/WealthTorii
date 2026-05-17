@@ -50,6 +50,7 @@ Postgres, une CLI complète et une API HTTP documentée par Swagger sont en plac
 - `storage` — persistance Postgres via `libpqxx` (migrations idempotentes)
 - `analytics` — totaux mensuels, suggestions de budget, détection des récurrents
 - `portfolio` — valorisation de positions (coût moyen), +/-value latente
+- `market_data` — récupération de cours via Stooq (CSV, sans clé)
 
 **Applications**
 - `apps/cli` — binaire `wt` : `allocate`, `categories`, `import`, `report`,
@@ -58,8 +59,9 @@ Postgres, une CLI complète et une API HTTP documentée par Swagger sont en plac
   fonctionnalités en HTTP, **Swagger UI** intégré et CRUD complet des
   comptes et transactions (OpenAPI 3.0)
 
-**Modules prévus**
-- `market_data` — flux de prix externe (les prix sont saisis manuellement pour l'instant)
+**Améliorations possibles**
+- `market_data` : rafraîchissement périodique automatique, conversion FX
+  (les cours Stooq sont stockés tels quels dans la devise de la position)
 
 ---
 
@@ -117,7 +119,7 @@ automatiquement si `DATABASE_URL` est absent).
 | Transactions | `GET/POST /api/transactions`, `GET/PUT/DELETE /api/transactions/{id}` |
 | Patrimoine | `GET /api/networth` (soldes + investissements + totaux par devise) |
 | Objectifs | `GET/POST /api/goals`, `GET/PUT/DELETE /api/goals/{id}`, `GET/POST /api/goals/{id}/contributions` |
-| Investissements | `GET /api/portfolio`, `GET/POST /api/positions`, `PUT/DELETE /api/positions/{id}`, `GET /api/prices`, `PUT/DELETE /api/prices/{symbol}` |
+| Investissements | `GET /api/portfolio`, `GET/POST /api/positions`, `PUT/DELETE /api/positions/{id}`, `GET /api/prices`, `PUT/DELETE /api/prices/{symbol}`, `POST /api/prices/refresh` (Stooq) |
 | Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
 | Analytics | `GET/POST /api/suggest`, `GET /api/trends` (mensuel + taux d'épargne), `GET /api/recurring` (récurrents détectés), `GET /api/forecast` (solde projeté), `GET /api/plan` (allocation perso + reste à vivre) |
 | Export | `GET/POST /api/export` (CSV format SORTED_DATA) |

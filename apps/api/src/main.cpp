@@ -7,6 +7,7 @@
 
 #include <wealthtorii/analytics/analytics.hpp>
 #include <wealthtorii/portfolio/portfolio.hpp>
+#include <wealthtorii/market_data/stooq.hpp>
 #include <wealthtorii/budget/allocation.hpp>
 #include <wealthtorii/budget/budget.hpp>
 #include <wealthtorii/budget/category.hpp>
@@ -19,6 +20,7 @@
 #include <wealthtorii/storage/repository.hpp>
 
 #include <drogon/drogon.h>
+#include <drogon/HttpClient.h>
 #include <drogon/MultiPart.h>
 
 #include <algorithm>
@@ -29,6 +31,8 @@
 #include <iomanip>
 #include <map>
 #include <set>
+#include <thread>
+#include <memory>
 #include <optional>
 #include <regex>
 #include <sstream>
@@ -2575,6 +2579,94 @@ namespace {
         }
     }
 
+    // Fetches Stooq quotes for every symbol the user holds and upserts the
+    // prices. Network + DB work runs on a detached worker thread (Drogon's
+    // synchronous HttpClient must not run on the event-loop thread).
+    void h_prices_refresh(const HttpRequestPtr& req, Callback&& cb) {
+        const auto url = storage::Connection::database_url_from_env();
+        if (!url.has_value()) {
+            return send_error(cb, "$DATABASE_URL is not set on the server",
+                              drogon::k500InternalServerError);
+        }
+        const std::string uid = uid_of(req);
+        std::map<std::string, std::string> sym_ccy;
+        try {
+            storage::Connection conn{*url};
+            const storage::PositionRepository pr{conn};
+            for (const auto& p : pr.list(uid)) {
+                sym_ccy.try_emplace(p.symbol, p.currency);
+            }
+        } catch (const std::exception& e) {
+            return send_error(cb, e.what(), drogon::k500InternalServerError);
+        }
+        if (sym_ccy.empty()) {
+            Json::Value out(Json::objectValue);
+            out["refreshed"] = Json::Value(Json::arrayValue);
+            out["failed"] = Json::Value(Json::arrayValue);
+            return send_json(cb, out);
+        }
+
+        const std::string dburl = *url;
+        auto cbp = std::make_shared<Callback>(std::move(cb));
+        std::thread([uid, dburl, sym_ccy, cbp]() {
+            auto client = drogon::HttpClient::newHttpClient("https://stooq.com");
+            Json::Value refreshed(Json::arrayValue);
+            Json::Value failed(Json::arrayValue);
+            std::optional<storage::Connection> conn;
+            try {
+                conn.emplace(dburl);
+            } catch (...) {
+            }
+            for (const auto& [sym, ccy] : sym_ccy) {
+                auto fail = [&](const std::string& why) {
+                    Json::Value f(Json::objectValue);
+                    f["symbol"] = sym;
+                    f["reason"] = why;
+                    failed.append(f);
+                };
+                try {
+                    auto rq = drogon::HttpRequest::newHttpRequest();
+                    rq->setMethod(drogon::Get);
+                    rq->setPath(market_data::stooq_path(sym));
+                    const auto [res, resp] = client->sendRequest(rq, 10.0);
+                    if (res != drogon::ReqResult::Ok || !resp) {
+                        fail("network error");
+                        continue;
+                    }
+                    const auto q = market_data::parse_stooq_csv(
+                        std::string(resp->body()));
+                    if (!q.has_value()) {
+                        fail("no quote");
+                        continue;
+                    }
+                    const auto cur = currency_or_eur(ccy);
+                    const std::string as_of =
+                        q->as_of.empty() ? format_iso_date(today_ymd())
+                                          : q->as_of;
+                    if (conn.has_value()) {
+                        storage::InstrumentPriceRepository repo{*conn};
+                        repo.upsert(uid, storage::StoredPrice{
+                                             sym,
+                                             std::string(money::to_string(cur)),
+                                             q->price_minor, as_of});
+                    }
+                    Json::Value r(Json::objectValue);
+                    r["symbol"] = sym;
+                    r["price"] =
+                        api::money_json(money::Money(q->price_minor, cur));
+                    r["as_of"] = as_of;
+                    refreshed.append(r);
+                } catch (const std::exception& e) {
+                    fail(e.what());
+                }
+            }
+            Json::Value out(Json::objectValue);
+            out["refreshed"] = refreshed;
+            out["failed"] = failed;
+            (*cbp)(drogon::HttpResponse::newHttpJsonResponse(out));
+        }).detach();
+    }
+
     // Builds a StoredPosition from JSON. id supplied by caller.
     std::optional<storage::StoredPosition> position_from_json(
         const Json::Value& b, std::string id, std::string& err) {
@@ -2858,6 +2950,7 @@ int main() {
 
     // ---- investments ---------------------------------------------------------
     app.registerHandler("/api/prices", &h_prices_get, {Get});
+    app.registerHandler("/api/prices/refresh", &h_prices_refresh, {Post});
     app.registerHandler("/api/prices/{symbol}", &h_price_put, {Put});
     app.registerHandler("/api/prices/{symbol}", &h_price_delete, {Delete});
     app.registerHandler("/api/positions", &h_positions_get, {Get});

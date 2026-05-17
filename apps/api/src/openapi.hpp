@@ -411,6 +411,17 @@ namespace wealthtorii::api {
         }
       }
     },
+    "/api/prices/refresh": {
+      "post": {
+        "tags": ["investments"],
+        "summary": "Rafraichit les prix via Stooq pour les symboles detenus",
+        "responses": {
+          "200": { "description": "{ refreshed:[{symbol,price,as_of}], failed:[{symbol,reason}] }", "content": { "application/json": { "schema": { "type": "object" } } } },
+          "402": { "$ref": "#/components/responses/PaymentRequired" },
+          "500": { "$ref": "#/components/responses/ServerError" }
+        }
+      }
+    },
     "/api/prices/{symbol}": {
       "put": {
         "tags": ["investments"],

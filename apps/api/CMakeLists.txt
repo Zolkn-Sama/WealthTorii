@@ -20,6 +20,7 @@ target_link_libraries(wt_api
         PRIVATE
         wealthtorii_cli_lib
         wealthtorii::portfolio
+        wealthtorii::market_data
         Drogon::Drogon
         unofficial-sodium::sodium
         jwt-cpp::jwt-cpp
