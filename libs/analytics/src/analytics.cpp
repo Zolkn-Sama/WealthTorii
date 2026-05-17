@@ -1,8 +1,12 @@
 #include "wealthtorii/analytics/analytics.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdint>
+#include <cstdlib>
 #include <set>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace wealthtorii::analytics {
 
@@ -110,6 +114,159 @@ namespace wealthtorii::analytics {
         std::sort(out.begin(), out.end(), [](const BudgetSuggestion& a, const BudgetSuggestion& b) {
             return a.suggested_limit.minor_units() > b.suggested_limit.minor_units();
         });
+        return out;
+    }
+
+    namespace {
+        // Lowercase, keep [a-z] only, collapse runs to single spaces, trim,
+        // cap length — so "PRLV SEPA NETFLIX 4321" and "NETFLIX.COM 9987"
+        // collapse toward a stable key.
+        std::string normalise(const std::string& desc) {
+            std::string n;
+            n.reserve(desc.size());
+            bool space = true; // start trimmed
+            for (const char raw : desc) {
+                const auto c = static_cast<unsigned char>(raw);
+                const char lo = static_cast<char>(std::tolower(c));
+                if (lo >= 'a' && lo <= 'z') {
+                    n.push_back(lo);
+                    space = false;
+                } else if (!space) {
+                    n.push_back(' ');
+                    space = true;
+                }
+            }
+            while (!n.empty() && n.back() == ' ') {
+                n.pop_back();
+            }
+            if (n.size() > 24) {
+                n.resize(24);
+            }
+            return n;
+        }
+
+        std::chrono::year_month_day add_one_month(
+            std::chrono::year_month_day d) {
+            const auto ym =
+                std::chrono::year_month{d.year(), d.month()} +
+                std::chrono::months{1};
+            std::chrono::year_month_day cand{ym.year(), ym.month(), d.day()};
+            if (!cand.ok()) {
+                return std::chrono::year_month_day{
+                    ym.year() / ym.month() / std::chrono::last};
+            }
+            return cand;
+        }
+
+        std::int64_t days_between(std::chrono::year_month_day a,
+                                  std::chrono::year_month_day b) {
+            return (std::chrono::sys_days{b} - std::chrono::sys_days{a}).count();
+        }
+    } // namespace
+
+    std::vector<RecurringItem> detect_recurring(const ledger::Journal& journal,
+                                                money::Currency currency,
+                                                unsigned min_occurrences) {
+        struct Entry {
+            std::chrono::year_month_day date;
+            std::int64_t minor;
+            std::optional<std::string> category;
+        };
+        std::unordered_map<std::string, std::vector<Entry>> groups;
+        std::unordered_map<std::string, std::string> label_of;
+
+        for (const auto& tx : journal.transactions()) {
+            if (tx.amount().currency() != currency) {
+                continue;
+            }
+            const auto key = normalise(tx.description());
+            if (key.empty()) {
+                continue;
+            }
+            groups[key].push_back(
+                Entry{tx.date(), tx.amount().minor_units(), tx.category_id()});
+            label_of.try_emplace(key, tx.description());
+        }
+
+        std::vector<RecurringItem> out;
+        for (auto& [key, entries] : groups) {
+            if (entries.size() < min_occurrences) {
+                continue;
+            }
+            std::sort(entries.begin(), entries.end(),
+                      [](const Entry& a, const Entry& b) {
+                          return std::chrono::sys_days{a.date} <
+                                 std::chrono::sys_days{b.date};
+                      });
+
+            std::vector<std::int64_t> gaps;
+            gaps.reserve(entries.size() - 1);
+            for (std::size_t i = 1; i < entries.size(); ++i) {
+                gaps.push_back(
+                    days_between(entries[i - 1].date, entries[i].date));
+            }
+            std::sort(gaps.begin(), gaps.end());
+            const std::int64_t median = gaps[gaps.size() / 2];
+            if (median < 25 || median > 35) {
+                continue; // not ~monthly
+            }
+
+            std::int64_t sum = 0;
+            std::int64_t lo = entries.front().minor;
+            std::int64_t hi = entries.front().minor;
+            bool same_sign = true;
+            const bool neg0 = entries.front().minor < 0;
+            for (const auto& e : entries) {
+                sum += e.minor;
+                lo = std::min(lo, e.minor);
+                hi = std::max(hi, e.minor);
+                if ((e.minor < 0) != neg0) {
+                    same_sign = false;
+                }
+            }
+            if (!same_sign) {
+                continue;
+            }
+            const std::int64_t n =
+                static_cast<std::int64_t>(entries.size());
+            const std::int64_t mean = sum / n;
+            const std::int64_t tol =
+                std::max<std::int64_t>(std::llabs(mean) / 5, 200); // 20% or 2€
+            if (hi - lo > tol) {
+                continue; // amount not stable enough
+            }
+
+            // Most frequent category in the group (first wins on ties).
+            std::map<std::string, int> cat_count;
+            for (const auto& e : entries) {
+                if (e.category.has_value()) {
+                    ++cat_count[*e.category];
+                }
+            }
+            std::optional<std::string> category;
+            int best = 0;
+            for (const auto& [c, cnt] : cat_count) {
+                if (cnt > best) {
+                    best = cnt;
+                    category = c;
+                }
+            }
+
+            RecurringItem item;
+            item.label = label_of[key];
+            item.category_id = category;
+            item.average_amount = money::Money(mean, currency);
+            item.occurrences = static_cast<unsigned>(entries.size());
+            item.last_date = entries.back().date;
+            item.next_date = add_one_month(entries.back().date);
+            out.push_back(std::move(item));
+        }
+
+        std::sort(out.begin(), out.end(),
+                  [](const RecurringItem& a, const RecurringItem& b) {
+                      return std::chrono::sys_days{a.next_date} <
+                             std::chrono::sys_days{b.next_date};
+                  });
         return out;
     }
 

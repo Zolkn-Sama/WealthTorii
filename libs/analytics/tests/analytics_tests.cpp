@@ -134,3 +134,54 @@ TEST(SuggestBudget, RejectsInvalidSafetyOrRound) {
                                                     Currency::EUR, 0, 0)),
                  std::invalid_argument);
 }
+
+namespace {
+    Transaction named_tx(std::string id, year_month_day d, std::int64_t minor,
+                         std::string desc, std::string category = "") {
+        std::optional<std::string> cat;
+        if (!category.empty()) cat = category;
+        return Transaction(std::move(id), d, "BP", Money(minor, Currency::EUR),
+                           std::move(desc), std::move(cat));
+    }
+}
+
+TEST(DetectRecurring, FindsMonthlySubscription) {
+    Journal j;
+    // ~monthly, stable amount, same description -> recurring.
+    j.add(named_tx("n1", year_month_day{year{2026}, month{1}, day{15}}, -1299,
+                   "NETFLIX.COM 4321", "subscriptions-leisure"));
+    j.add(named_tx("n2", year_month_day{year{2026}, month{2}, day{15}}, -1299,
+                   "NETFLIX.COM 9987", "subscriptions-leisure"));
+    j.add(named_tx("n3", year_month_day{year{2026}, month{3}, day{14}}, -1399,
+                   "NETFLIX COM 1122", "subscriptions-leisure"));
+    // Noise: one-off, different label.
+    j.add(named_tx("x1", year_month_day{year{2026}, month{2}, day{3}}, -8000,
+                   "FNAC PARIS"));
+
+    const auto rec = detect_recurring(j, Currency::EUR);
+    ASSERT_EQ(rec.size(), 1u);
+    EXPECT_EQ(rec[0].occurrences, 3u);
+    EXPECT_TRUE(rec[0].average_amount.is_negative());
+    EXPECT_EQ(rec[0].last_date, (year_month_day{year{2026}, month{3}, day{14}}));
+    EXPECT_EQ(rec[0].next_date, (year_month_day{year{2026}, month{4}, day{14}}));
+    ASSERT_TRUE(rec[0].category_id.has_value());
+    EXPECT_EQ(*rec[0].category_id, "subscriptions-leisure");
+}
+
+TEST(DetectRecurring, IgnoresTooFewAndIrregular) {
+    Journal j;
+    // Only twice -> below default min_occurrences (3).
+    j.add(named_tx("a1", year_month_day{year{2026}, month{1}, day{5}}, -1000,
+                   "SPOTIFY"));
+    j.add(named_tx("a2", year_month_day{year{2026}, month{2}, day{5}}, -1000,
+                   "SPOTIFY"));
+    // Three times but wildly irregular gaps -> not monthly.
+    j.add(named_tx("b1", year_month_day{year{2026}, month{1}, day{1}}, -500,
+                   "RANDOM SHOP"));
+    j.add(named_tx("b2", year_month_day{year{2026}, month{1}, day{9}}, -500,
+                   "RANDOM SHOP"));
+    j.add(named_tx("b3", year_month_day{year{2026}, month{6}, day{20}}, -500,
+                   "RANDOM SHOP"));
+
+    EXPECT_TRUE(detect_recurring(j, Currency::EUR).empty());
+}
