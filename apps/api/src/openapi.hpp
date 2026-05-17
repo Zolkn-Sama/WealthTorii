@@ -679,6 +679,7 @@ namespace wealthtorii::api {
           "id": { "type": "string" },
           "name": { "type": "string" },
           "currency": { "type": "string", "enum": ["EUR","USD","CHF"] },
+          "type": { "type": "string", "enum": ["CASH","BROKERAGE","CRYPTO","SAVINGS","EXTERNAL"] },
           "opening_balance": { "$ref": "#/components/schemas/Money" },
           "balance": { "$ref": "#/components/schemas/Money" }
         }

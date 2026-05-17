@@ -299,8 +299,9 @@ namespace wealthtorii::storage {
             b.id = row[0].template as<std::string>();
             b.name = row[1].template as<std::string>();
             b.currency = row[2].template as<std::string>();
-            b.opening_balance = row[3].template as<std::int64_t>();
-            b.current_balance = row[4].template as<std::int64_t>();
+            b.type = row[3].template as<std::string>();
+            b.opening_balance = row[4].template as<std::int64_t>();
+            b.current_balance = row[5].template as<std::int64_t>();
             return b;
         }
     } // namespace
@@ -309,12 +310,12 @@ namespace wealthtorii::storage {
         std::string_view user_id) const {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(
-            "SELECT a.id, a.name, a.currency, a.opening_balance, "
+            "SELECT a.id, a.name, a.currency, a.type, a.opening_balance, "
             "       (a.opening_balance + COALESCE(SUM(t.minor_units), 0))::bigint "
             "FROM accounts a "
             "LEFT JOIN transactions t ON t.account_id = a.id "
             "WHERE a.user_id = $1 "
-            "GROUP BY a.id, a.name, a.currency, a.opening_balance "
+            "GROUP BY a.id, a.name, a.currency, a.type, a.opening_balance "
             "ORDER BY a.id",
             pqxx::params{std::string(user_id)});
         std::vector<AccountBalance> out;
@@ -329,12 +330,12 @@ namespace wealthtorii::storage {
         std::string_view user_id, std::string_view account_id) const {
         pqxx::work tx(conn_->raw());
         const auto r = tx.exec(
-            "SELECT a.id, a.name, a.currency, a.opening_balance, "
+            "SELECT a.id, a.name, a.currency, a.type, a.opening_balance, "
             "       (a.opening_balance + COALESCE(SUM(t.minor_units), 0))::bigint "
             "FROM accounts a "
             "LEFT JOIN transactions t ON t.account_id = a.id "
             "WHERE a.user_id = $1 AND a.id = $2 "
-            "GROUP BY a.id, a.name, a.currency, a.opening_balance",
+            "GROUP BY a.id, a.name, a.currency, a.type, a.opening_balance",
             pqxx::params{std::string(user_id), std::string(account_id)});
         if (r.empty()) return std::nullopt;
         return row_to_balance(r.front());

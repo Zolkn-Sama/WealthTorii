@@ -95,6 +95,7 @@ namespace wealthtorii::storage {
         std::string id;
         std::string name;
         std::string currency;
+        std::string type;
         std::int64_t opening_balance = 0;
         std::int64_t current_balance = 0;
     };
