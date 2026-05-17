@@ -109,7 +109,7 @@ automatiquement si `DATABASE_URL` est absent).
 | Patrimoine | `GET /api/networth` (soldes + totaux par devise) |
 | Objectifs | `GET/POST /api/goals`, `GET/PUT/DELETE /api/goals/{id}`, `GET/POST /api/goals/{id}/contributions` |
 | Storage | `POST /api/sync`, `GET /api/report` (depuis Postgres) |
-| Analytics | `GET/POST /api/suggest`, `GET /api/trends` (mensuel + taux d'épargne), `GET /api/recurring` (récurrents détectés), `GET /api/forecast` (solde projeté) |
+| Analytics | `GET/POST /api/suggest`, `GET /api/trends` (mensuel + taux d'épargne), `GET /api/recurring` (récurrents détectés), `GET /api/forecast` (solde projeté), `GET /api/plan` (allocation perso + reste à vivre) |
 | Export | `GET/POST /api/export` (CSV format SORTED_DATA) |
 
 ### Authentification & freemium
@@ -122,7 +122,7 @@ transactions, **budgets et règles** sont **cloisonnés par utilisateur**
 | Tier | Fonctionnalités |
 |---|---|
 | **Gratuit** | `allocate`, `categories`, `budget`, `rules`, `import` |
-| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends`, `goals`, `recurring`, `forecast` |
+| **Premium** | `report`, `suggest`, `export`, comptes, transactions, `sync`, `networth`, `trends`, `goals`, `recurring`, `forecast`, `plan` |
 
 Un utilisateur `free` qui appelle un endpoint premium reçoit `402 Payment
 Required`. Le mot de passe est haché en **Argon2id** (libsodium) ; le JWT est
